@@ -997,50 +997,32 @@ enum nat_state {
 /*
  * VIP inode set, ported from the HyperOS 4 kernel (CONFIG_F2FS_VIP_FILE).
  *
- * Layout matches the HyperOS 4 binary exactly (from its BTF), so the on-disk
- * and in-memory contracts stay compatible:
+ * sorted[] holds the nids, sorted ascending and binary-searchable, length =
+ * count.  It starts at F2FS_VIP_SORTED_MIN entries and doubles up to
+ * F2FS_VIP_SORTED_MAX as nids are added by F2FS_IOC_SET_PIN_FILE.
  *
- *   struct f2fs_vip_manager       -- 48 bytes, f2fs_nm_info.vip at +376
- *   struct vip_inode_sorted       --  8 bytes { nid, unsorted_idx }
- *   struct vip_inode_unsorted     --  4 bytes { nid }
- *
- * Two containers are kept:
- *   - sorted[]   : sorted by nid, binary-searchable, length = count
- *   - unsorted[] : a ring buffer indexed by head/tail, length = unsorted_count
- *
- * unsorted_buf_size is the ring capacity. When the ring is full, its contents
- * are merged into sorted[] and the ring is reset. sorted[] grows by doubling.
+ * The stock container (struct f2fs_vip_manager, 48 bytes, f2fs_nm_info.vip at
+ * +376 in the HyperOS 4 BTF) additionally keeps an unsorted ring buffer
+ * (struct vip_inode_unsorted, per-entry ring index) that is merged into
+ * sorted[] once it fills up.  That ring is deliberately not reproduced: the
+ * entries parked in it are invisible to f2fs_vip_bsearch(), i.e. to
+ * f2fs_is_vip_inode()/f2fs_iget(), and its remove-by-index bookkeeping is only
+ * valid until the first flush.  See the file header of fs/f2fs/vip.c.
  */
 struct vip_inode_sorted {
-	nid_t ino;			/* inode number */
-	unsigned int unsorted_idx;	/* index in the unsorted ring */
-};
-
-struct vip_inode_unsorted {
 	nid_t ino;			/* inode number */
 };
 
 struct f2fs_vip_manager {
-	struct vip_inode_sorted *sorted;	/* sorted by ino */
-	struct vip_inode_unsorted *unsorted;	/* ring buffer */
+	struct vip_inode_sorted *sorted;	/* sorted by ino, count entries */
 	unsigned int count;		/* # entries in sorted[] */
 	unsigned int capacity;		/* allocated size of sorted[] */
-	unsigned int unsorted_buf_size;	/* capacity of unsorted[] */
-	unsigned int unsorted_head;	/* ring head */
-	unsigned int unsorted_tail;	/* ring tail */
 	spinlock_t lock;		/* protects all of the above */
 	unsigned int enabled;		/* mirrored from sysfs vip_file_enable */
 };
 
 #define F2FS_VIP_SORTED_MIN		8
-#define F2FS_VIP_UNSORTED_MIN		16
-
-static inline unsigned int f2fs_vip_unsorted_count(struct f2fs_vip_manager *vip)
-{
-	if (vip->unsorted_tail >= vip->unsorted_head)
-		return vip->unsorted_tail - vip->unsorted_head;
-	return vip->unsorted_buf_size - vip->unsorted_head + vip->unsorted_tail;
-}
+#define F2FS_VIP_SORTED_MAX		(1U << 16)
 #endif
 
 struct f2fs_nm_info {

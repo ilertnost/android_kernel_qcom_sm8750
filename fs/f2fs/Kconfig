@@ -169,9 +169,9 @@ config F2FS_VIP_FILE
 	  reported on f2fs_iget() through F2FS_I()/set_inode_flag(FI_VIP) and are
 	  protected from GC relocation, so their data stays where it was written.
 
-	  The set is indexed by nid: a sorted array for binary search plus an
-	  unsorted ring buffer that is merged into the sorted array when it fills
-	  up. Entries are added by F2FS_IOC_SET_PIN_FILE and removed on unlink.
+	  The set is a nid-sorted array searched by binary search. Entries are
+	  added by F2FS_IOC_SET_PIN_FILE (the unlink-time removal path is
+	  recovered but not wired up in this tree).
 
 	  Ported from the HyperOS 4 kernel (F2FS_VIP_FILE, active there with
 	  vip_file_enable=1, gc_pin_file_thresh=2048, reserved_pin_section=512).
