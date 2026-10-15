@@ -111,7 +111,7 @@ else
 # so the git-derived path above never fires and KSU_VERSION would fall back to
 # the sentinel 16. The manager reads this number over the supercall and treats
 # 16 as an ancient kernel, so the vendored revision is pinned here instead:
-# upstream tiann/KernelSU main @ 2680 commits, i.e. 30000 + 2680.
+# upstream tiann/KernelSU main @ 2680 commits (tag v3.3.1), i.e. 30000 + 2680.
 $(warning "KSU_GIT_VERSION not defined! Pinning the vendored revision instead")
 KSU_VERSION ?= 32680
 ccflags-y += -DKSU_VERSION=$(KSU_VERSION)

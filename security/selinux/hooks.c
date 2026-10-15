@@ -110,8 +110,7 @@ struct selinux_state selinux_state;
 #ifdef CONFIG_KSU_SUSFS
 extern struct selinux_policy *backup_sepolicy;
 extern bool ksu_selinux_hide_running __read_mostly;
-extern int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
-                                               u32 *sid, u32 def_sid, gfp_t gfp_flags);
+extern int my_security_context_to_sid(struct selinux_policy *policy, const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp);
 #endif // #ifdef CONFIG_KSU_SUSFS
 
 /* SECMARK reference count */
@@ -6502,6 +6501,11 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 	u32 mysid = current_sid(), sid = 0, ptsid;
 	int error;
 	char *str = value;
+#ifdef CONFIG_KSU_SUSFS
+	bool should_check_current = (likely(!strcmp(name, "current") &&
+								 current_uid().val >= 10000 &&
+								 ksu_selinux_hide_running));
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	/*
 	 * Basic control over ability to set these attributes at all.
@@ -6532,6 +6536,14 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 			str[size-1] = 0;
 			size--;
 		}
+#ifdef CONFIG_KSU_SUSFS
+		if (should_check_current) {
+			u32 tmp_sid = 0;
+			int fake_error = my_security_context_to_sid(backup_sepolicy, value, size, &tmp_sid, GFP_KERNEL);
+			if (fake_error)
+				return fake_error;
+		}
+#endif // #ifdef CONFIG_KSU_SUSFS
 		error = security_context_to_sid(value, size,
 						&sid, GFP_KERNEL);
 		if (error == -EINVAL && !strcmp(name, "fscreate")) {
@@ -6629,41 +6641,6 @@ abort_change:
 	abort_creds(new);
 	return error;
 }
-
-#ifdef CONFIG_KSU_SUSFS
-static int my_setprocattr(const char *name, void *value, size_t size)
-{
-	u32 mysid = current_sid(), sid = 0;
-	int error;
-	char *str = value;
-
-	// apply to all app uids
-	if (likely(current_uid().val < 10000 ||
-				!ksu_selinux_hide_running ||
-				strcmp(name, "current")))
-		return selinux_setprocattr(name, value, size);
-
-	error = avc_has_perm(mysid, mysid, SECCLASS_PROCESS,
-				     PROCESS__SETCURRENT, NULL);
-
-	if (error)
-		return error;
-
-	/* Obtain a SID for the context, if one was specified. */
-	if (size && str[0] && str[0] != '\n') {
-		if (str[size-1] == '\n') {
-			str[size-1] = 0;
-			size--;
-		}
-
-		error = security_context_to_sid_with_policy(backup_sepolicy, str, size, &sid, SECSID_NULL, GFP_KERNEL);
-		if (error)
-			return error;
-	}
-
-	return selinux_setprocattr(name, value, size);
-}
-#endif // #ifdef CONFIG_KSU_SUSFS
 
 static int selinux_ismaclabel(const char *name)
 {
@@ -7293,11 +7270,7 @@ static struct security_hook_list selinux_hooks[] __ro_after_init = {
 	LSM_HOOK_INIT(d_instantiate, selinux_d_instantiate),
 
 	LSM_HOOK_INIT(getprocattr, selinux_getprocattr),
-#ifdef CONFIG_KSU_SUSFS
-	LSM_HOOK_INIT(setprocattr, my_setprocattr),
-#else
 	LSM_HOOK_INIT(setprocattr, selinux_setprocattr),
-#endif // #ifdef CONFIG_KSU_SUSFS
 
 	LSM_HOOK_INIT(ismaclabel, selinux_ismaclabel),
 	LSM_HOOK_INIT(secctx_to_secid, selinux_secctx_to_secid),

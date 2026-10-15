@@ -22,26 +22,42 @@ Upstream `main` is the base those patches are written against. Its
 in `10_enable_susfs_for_ksu.patch`, and that patch applies with **0 of 97
 hunks failing**.
 
-Vendored at commit `0c0fdb96` of `tiann/KernelSU` `main` (2680 commits,
-reported as KSU_VERSION 32680).
+Vendored at commit `0c0fdb96` of `tiann/KernelSU` `main`, which is tag
+`v3.3.1`, the current release (2680 commits, reported as KSU_VERSION 32680).
+The driver tree is byte-identical at `v3.3.1` and at the current `main` tip
+(`200818ca`, 2683 commits): between them only `manager/` and `userspace/ksud`
+moved, so there was nothing to update on the kernel side.
+
+The SUSFS patches are `susfs4ksu` branch `gki-android15-6.6`, commit
+`2d11d711de80f0f749b3055f8da8f7b9682454e4` (2026-10-14), and are byte-for-byte
+what that branch ships. `fs/susfs.c`, `include/linux/susfs.h` and
+`include/linux/susfs_def.h` are identical between that commit and the earlier
+one vendored here, so the SUSFS version did not change - only the integration
+did. That revision moved 605 lines of duplicated SELinux internals out of the
+driver and into `security/selinux/ss/services.c`; see "Local changes" below.
 
 ## The patches in this directory
 
 | File | What it is |
 |---|---|
 | `10_enable_susfs_for_ksu.patch` | Upstream susfs4ksu. Adds the SUSFS wiring and the `CONFIG_KSU_SUSFS*` Kconfig menu to the KSU driver. Apply with `a/kernel/` rewritten to `a/drivers/kernelsu/`. |
-| `50_add_susfs_in_gki-android15-6.6.patch` | Upstream susfs4ksu. The kernel-side SUSFS integration: hooks in `fs/`, `kernel/`, `security/`, `mm/`, and the two wrapper functions in `security/selinux/ss/services.c`. |
-| `Kbuild.reference` | The driver `Kbuild` as patched and built here, kept because two hunks of it are local. |
+| `50_add_susfs_in_gki-android15-6.6.patch` | Upstream susfs4ksu. The kernel-side SUSFS integration: hooks in `fs/`, `kernel/`, `mm/`, `security/selinux/hooks.c` and `security/selinux/selinuxfs.c`, plus the `my_security_*` re-implementations of the SELinux internals in `security/selinux/ss/services.c` that those hooks call. |
+| `Kbuild.reference` | The driver `Kbuild` as built here, kept because one hunk of it is local: the version pin. |
 
 Both patches are byte-for-byte what susfs4ksu ships. Neither is modified.
 
 ## How to reproduce
 
 ```bash
+# 0. pin the sources
+#    KernelSU : tag v3.3.1, commit 0c0fdb96. The kernel/ tree is identical at
+#               the current main tip (200818ca), so either works.
+#    susfs4ksu: branch gki-android15-6.6, commit 2d11d711
+
 # 1. vendor the driver and its UAPI headers
-cp -r <KernelSU main>/kernel         common/drivers/kernelsu
+cp -r <KernelSU 0c0fdb96>/kernel      common/drivers/kernelsu
 mkdir -p common/drivers/uapi
-cp <KernelSU main>/uapi/*.h          common/drivers/uapi/
+cp <KernelSU 0c0fdb96>/uapi/*.h       common/drivers/uapi/
 #    include/uapi inside the driver is a symlink to ../../uapi, which points
 #    outside the repo once kernel/ lives under drivers/
 
@@ -58,40 +74,18 @@ patch -p1 -d common < 50_add_susfs_in_gki-android15-6.6.patch
 cp <susfs4ksu>/kernel_patches/fs/susfs.c               common/fs/
 cp <susfs4ksu>/kernel_patches/include/linux/susfs.h    common/include/linux/
 cp <susfs4ksu>/kernel_patches/include/linux/susfs_def.h common/include/linux/
+
+# 5. pin the version in drivers/kernelsu/Kbuild - the one local change, below
 ```
 
 Then enable `CONFIG_KSU=y` and the ten `CONFIG_KSU_SUSFS*` options in
 `arch/arm64/configs/gki_defconfig`.
 
-## Three build fixes, and why each is correct
+## Local changes to the vendored driver
 
-These are forced by the patch, not tuning. Each one is justified by the
-compiler or by the tree, and each is reported because leaving them out would
-be a silent patch.
+Exactly one is needed with the current patches.
 
-### 1. `drivers/kernelsu/feature/selinux_hide.c`
-
-The patch guards two calls with `if (fn)`:
-
-```c
-if (security_dump_masked_av_fn)
-        security_dump_masked_av_fn(...);
-```
-
-But `50_add_susfs` adds those names in `security/selinux/ss/services.c` as
-**real functions**, not function pointers, so the test is always true. clang
-refuses it:
-
-```
-error: address of function 'security_dump_masked_av_fn' will always evaluate
-       to 'true' [-Werror,-Wpointer-bool-conversion]
-```
-
-The second one is worse: its `else` branch calls `context_struct_compute_av`
-directly, and that symbol is `static` in `services.c`, so it would not link.
-Both guards are removed and the calls kept.
-
-### 2. `drivers/kernelsu/Kbuild`
+### 1. `drivers/kernelsu/Kbuild` - the version pin
 
 The version falls back to a sentinel when the git-derived path does not fire:
 
@@ -107,11 +101,36 @@ treats as an ancient kernel. It is pinned to the vendored revision instead:
 KSU_VERSION ?= 32680   # 30000 + 2680 commits
 ```
 
-### 3. `fs/exec.c`
+### 2. `feature/selinux_hide.c` - obsolete with this patch revision
 
-The patch declares `__ksu_is_allow_uid_for_current`, a SukiSU-only symbol. It
-has no caller in this tree and upstream KernelSU does not define it, so the
-declaration is removed.
+The **earlier** `10_enable_susfs_for_ksu.patch` carried its own copy of the
+SELinux internals (`string_to_context_struct`,
+`security_context_to_sid_with_policy`, ... 605 lines) in the driver, and
+guarded two calls with `if (fn)`. Those names are real functions in this tree,
+so the test is always true and clang refuses it:
+
+```
+error: address of function 'security_dump_masked_av_fn' will always evaluate
+       to 'true' [-Werror,-Wpointer-bool-conversion]
+```
+
+The second guard was worse: its `else` branch called `context_struct_compute_av`
+directly, and that symbol is `static` in `services.c`, so it would not link.
+Both guards were removed.
+
+The current revision drops those 605 lines from the driver entirely and declares
+the functions in `services.c` instead (`my_security_*`). There is no `if (fn)`
+left to fix, so that local change is gone with it.
+
+### 3. `fs/exec.c` - a leftover, not a patch fix
+
+`fs/exec.c` carried `extern bool __ksu_is_allow_uid_for_current(uid_t uid);`
+from the earlier SukiSU-era integration, not from the susfs4ksu patch. The
+symbol is defined in `drivers/kernelsu/policy/allowlist.c` and upstream's own
+code declares and calls it in `policy/allowlist.h` and `feature/sucompat.c`;
+the patch additionally declares and calls it in `fs/open.c` and `fs/stat.c`.
+`fs/exec.c` neither declared it for a caller nor used it, so the stray line was
+dropped. Reproducing this tree from the patches does not involve this file.
 
 ## What was verified in the built image
 

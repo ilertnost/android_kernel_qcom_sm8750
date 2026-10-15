@@ -527,18 +527,6 @@ out:
 	kfree(scontext_name);
 }
 
-#ifdef CONFIG_KSU_SUSFS
-void security_dump_masked_av_fn(struct policydb *policydb,
-				    struct context *scontext,
-				    struct context *tcontext,
-				    u16 tclass,
-				    u32 permissions,
-				    const char *reason)
-{
-	security_dump_masked_av(policydb, scontext, tcontext, tclass, permissions, reason);
-}
-#endif // #ifdef CONFIG_KSU_SUSFS
-
 /*
  * security_boundary_permission - drops violated permissions
  * on boundary constraint.
@@ -726,18 +714,6 @@ static void context_struct_compute_av(struct policydb *policydb,
 	type_attribute_bounds_av(policydb, scontext, tcontext,
 				 tclass, avd);
 }
-
-#ifdef CONFIG_KSU_SUSFS
-void context_struct_compute_av_fn(struct policydb *policydb,
-				      struct context *scontext,
-				      struct context *tcontext,
-				      u16 tclass,
-				      struct av_decision *avd,
-				      struct extended_perms *xperms)
-{
-	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd, xperms);
-}
-#endif // #ifdef CONFIG_KSU_SUSFS
 
 static int security_validtrans_handle_fail(struct selinux_policy *policy,
 					struct sidtab_entry *oentry,
@@ -1233,6 +1209,54 @@ allow:
 	goto out;
 }
 
+#ifdef CONFIG_KSU_SUSFS
+void my_security_compute_av_user(struct selinux_policy *policy,
+			      u32 ssid, u32 tsid, u16 tclass, struct av_decision *avd)
+{
+	struct policydb *policydb;
+	struct sidtab *sidtab;
+	struct context *scontext = NULL, *tcontext = NULL;
+
+	avd_init(policy, avd);
+	if (!selinux_initialized())
+		goto allow;
+
+	policydb = &policy->policydb;
+	sidtab = policy->sidtab;
+
+	scontext = sidtab_search(sidtab, ssid);
+	if (!scontext) {
+		pr_err("SELinux: %s:  unrecognized SID %d\n",
+		       __func__, ssid);
+		goto out;
+	}
+
+	/* permissive domain? */
+	if (ebitmap_get_bit(&policydb->permissive_map, scontext->type))
+		avd->flags |= AVD_FLAGS_PERMISSIVE;
+
+	tcontext = sidtab_search(sidtab, tsid);
+	if (!tcontext) {
+		pr_err("SELinux: %s:  unrecognized SID %d\n",
+		       __func__, tsid);
+		goto out;
+	}
+
+	if (unlikely(!tclass)) {
+		if (policydb->allow_unknown)
+			goto allow;
+		goto out;
+	}
+
+	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd,
+				  NULL);
+ out:
+	return;
+allow:
+	avd->allowed = 0xffffffff;
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 /*
  * Write the security context string representation of
  * the context structure `context' into a dynamically
@@ -1419,6 +1443,71 @@ int security_sid_to_context_force(u32 sid,
 					    scontext_len, 1, 0);
 }
 
+#ifdef CONFIG_KSU_SUSFS
+static int my_security_sid_to_context_core(struct selinux_policy *policy,
+					u32 sid, char **scontext,
+					u32 *scontext_len, int force,
+					int only_invalid)
+{
+	struct policydb *policydb;
+	struct sidtab *sidtab;
+	struct sidtab_entry *entry;
+	int rc = 0;
+
+	if (scontext)
+		*scontext = NULL;
+	*scontext_len  = 0;
+
+	if (!selinux_initialized()) {
+		if (sid <= SECINITSID_NUM) {
+			char *scontextp;
+			const char *s = initial_sid_to_string[sid];
+
+			if (!s)
+				return -EINVAL;
+			*scontext_len = strlen(s) + 1;
+			if (!scontext)
+				return 0;
+			scontextp = kmemdup(s, *scontext_len, GFP_ATOMIC);
+			if (!scontextp)
+				return -ENOMEM;
+			*scontext = scontextp;
+			return 0;
+		}
+		pr_err("SELinux: %s:  called before initial "
+		       "load_policy on unknown SID %d\n", __func__, sid);
+		return -EINVAL;
+	}
+
+	policydb = &policy->policydb;
+	sidtab = policy->sidtab;
+
+	if (force)
+		entry = sidtab_search_entry_force(sidtab, sid);
+	else
+		entry = sidtab_search_entry(sidtab, sid);
+	if (!entry) {
+		pr_err("SELinux: %s:  unrecognized SID %d\n",
+			__func__, sid);
+		rc = -EINVAL;
+		goto out;
+	}
+	if (only_invalid && !entry->context.len)
+		goto out;
+
+	rc = sidtab_entry_to_string(policydb, sidtab, entry, scontext,
+				    scontext_len);
+
+out:
+	return rc;
+
+}
+
+int my_security_sid_to_context(struct selinux_policy *policy, u32 sid, char **scontext, u32 *scontext_len)
+{
+	return my_security_sid_to_context_core(policy, sid, scontext, scontext_len, 0, 0);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
 /**
  * security_sid_to_context_inval - Obtain a context for a given SID if it
  *                                 is invalid.
@@ -1619,6 +1708,88 @@ int security_context_str_to_sid(const char *scontext, u32 *sid, gfp_t gfp)
 	return security_context_to_sid(scontext, strlen(scontext),
 				       sid, gfp);
 }
+
+#ifdef CONFIG_KSU_SUSFS
+static int my_security_context_to_sid_core(struct selinux_policy *policy,
+					const char *scontext, u32 scontext_len,
+					u32 *sid, u32 def_sid, gfp_t gfp_flags,
+					int force)
+{
+	struct policydb *policydb;
+	struct sidtab *sidtab;
+	char *scontext2, *str = NULL;
+	struct context context;
+	int rc = 0;
+
+	/* An empty security context is never valid. */
+	if (!scontext_len)
+		return -EINVAL;
+
+	/* Copy the string to allow changes and ensure a NUL terminator */
+	scontext2 = kmemdup_nul(scontext, scontext_len, gfp_flags);
+	if (!scontext2)
+		return -ENOMEM;
+
+	if (!selinux_initialized()) {
+		u32 i;
+
+		for (i = 1; i < SECINITSID_NUM; i++) {
+			const char *s = initial_sid_to_string[i];
+
+			if (s && !strcmp(s, scontext2)) {
+				*sid = i;
+				goto out;
+			}
+		}
+		*sid = SECINITSID_KERNEL;
+		goto out;
+	}
+	*sid = SECSID_NULL;
+
+	if (force) {
+		/* Save another copy for storing in uninterpreted form */
+		rc = -ENOMEM;
+		str = kstrdup(scontext2, gfp_flags);
+		if (!str)
+			goto out;
+	}
+retry:
+	policydb = &policy->policydb;
+	sidtab = policy->sidtab;
+	rc = string_to_context_struct(policydb, sidtab, scontext2,
+				      &context, def_sid);
+	if (rc == -EINVAL && force) {
+		context.str = str;
+		context.len = strlen(str) + 1;
+		str = NULL;
+	} else if (rc)
+		goto out;
+	rc = sidtab_context_to_sid(sidtab, &context, sid);
+	if (rc == -ESTALE) {
+		if (context.str) {
+			str = context.str;
+			context.str = NULL;
+		}
+		context_destroy(&context);
+		goto retry;
+	}
+	context_destroy(&context);
+out:
+	kfree(scontext2);
+	kfree(str);
+	return rc;
+}
+
+int my_security_context_to_sid(struct selinux_policy *policy, const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp)
+{
+	return my_security_context_to_sid_core(policy, scontext, scontext_len, sid, SECSID_NULL, gfp, 0);
+}
+
+int my_security_context_str_to_sid(struct selinux_policy *policy, const char *scontext, u32 *sid, gfp_t gfp)
+{
+	return my_security_context_to_sid(policy, scontext, strlen(scontext), sid, gfp);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 /**
  * security_context_to_sid_default - Obtain a SID for a given security context,

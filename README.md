@@ -188,20 +188,26 @@ wires the KSU core to call into it, so it cannot give "KSU plus built-in SUSFS"
 at all. This is a different ground from the earlier v0.x attempt, where Next
 simply would not compile.
 
-SUSFS is grafted on in-tree by `susfs4ksu`'s `gki-android15-6.6` patches, with
-`fs/susfs.c` and the two headers copied in (the patch does not create them).
-Three build fixes were needed and are documented, with the exact compiler
-errors, in `apex-patches/kernelsu/README.md`:
+SUSFS is grafted on in-tree by `susfs4ksu`'s `gki-android15-6.6` patches
+(revision `2d11d711`, 2026-10-14), with `fs/susfs.c` and the two headers copied
+in (the patch does not create them). That revision keeps the SELinux internals
+in `security/selinux/ss/services.c` as `my_security_*` and leaves the driver as
+the feature switch plus the `backup_sepolicy` lifecycle; the 605 lines of
+duplicated internals that an earlier revision carried in
+`feature/selinux_hide.c` are gone.
 
-- `feature/selinux_hide.c` tested `if (fn)` around two wrappers that are real
-  functions, not pointers. clang rejects that with
-  `-Werror,-Wpointer-bool-conversion`, and the `else` branch called a `static`
-  symbol in `services.c` that does not link.
+One local change to the vendored driver remains, documented in
+`apex-patches/kernelsu/README.md`:
+
 - `Kbuild` fell back to `KSU_VERSION=16` because kleaf builds from a sandboxed
   copy with no `.git`. The manager reads that number, and 16 means "ancient
   kernel". It is pinned to 32680 instead.
-- `fs/exec.c` declared `__ksu_is_allow_uid_for_current`, a SukiSU-only symbol
-  with no caller in this tree and no definition in upstream KernelSU.
+
+The two changes the earlier patch revision needed — the `if (fn)` guards in
+`feature/selinux_hide.c` and a stray `fs/exec.c` declaration left over from the
+SukiSU era — are gone with it. KernelSU itself needed no update: the driver tree
+is byte-identical between tag `v3.3.1` (our vendored `0c0fdb96`) and the current
+`main` tip.
 
 The earlier SukiSU Ultra work is kept in `apex-patches/sukisu-ultra/` for
 reference. It is not used by v1.2.

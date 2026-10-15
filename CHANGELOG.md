@@ -22,6 +22,18 @@ not.
   upstream KernelSU, not SukiSU Ultra. Upstream is also the base those patches
   record as their pre-image (`kernel/Kbuild` blob `6c92a013`), so
   `10_enable_susfs_for_ksu.patch` applies with 0 of 97 hunks failing.
+- **SUSFS integration refreshed to the current `susfs4ksu` revision**
+  (`gki-android15-6.6` @ `2d11d711`, 2026-10-14). The SUSFS code itself
+  (`fs/susfs.c` and the two headers) is unchanged between revisions; what moved
+  is where the hiding lives. The 605 lines of duplicated SELinux internals that
+  the earlier revision carried in the driver's `feature/selinux_hide.c` are now
+  in `security/selinux/ss/services.c` as `my_security_*`, called from
+  `security/selinux/hooks.c` and `selinuxfs.c`, and the driver is back to the
+  feature switch plus the `backup_sepolicy` lifecycle. Both patches are
+  byte-for-byte what that branch ships. KernelSU needed no update: its driver
+  tree is byte-identical between tag `v3.3.1` (the release, our vendored
+  `0c0fdb96`, 2680 commits) and the current `main` tip (`200818ca`, 2683
+  commits); only `manager/` and `userspace/ksud` moved on.
 - **KernelSU-Next `dev` was the original plan and was rejected on evidence,**
   not on the earlier bad experience: it has no in-tree SUSFS. It vendors SUSFS
   as its own loadable module and wires the KSU core to call into it, so
