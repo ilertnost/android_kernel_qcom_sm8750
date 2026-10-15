@@ -3,6 +3,41 @@
 Newest first. Each entry states what was verified and, where relevant, what was
 not.
 
+## v1.3 (6.6.144)
+
+- **BBRv3 was tried and rejected on device evidence.** The backport from
+  `palazik/kernel_patches` (`common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.6.patch`,
+  fatalcoder524, upstream commit `3bf381592fa3`) was applied and made the
+  default congestion control (`CONFIG_TCP_CONG_BBR3=y`, `CONFIG_DEFAULT_BBR3=y`).
+  The kernel boots, `bbr3` registers and is used. Mobile data then became
+  several times worse, so the patch is reverted in full - including the ECN
+  changes it makes in `net/ipv4/tcp_output.c`, which apply to every socket, not
+  only to bbr3. `cubic` is the default again, as in v1.1 and v1.2. The
+  experiment and the two defects found in that upstream patch are recorded in
+  `apex-patches/README.md`.
+- **ThinLTO enabled, and measured this time.** v1.1 removed it on the statement
+  that it "slowed the read path"; that statement was never backed by a number.
+  v1.3 builds one source twice - `CONFIG_LTO_CLANG_THIN=y` and
+  `CONFIG_LTO_NONE=y` - and puts the difference in the table instead of
+  repeating the claim.
+
+  | same source, clang r510928, 16 cores | LTO_NONE | ThinLTO | delta |
+  |---|---|---|---|
+  | `.text` | 17 608 704 | 17 924 096 | +315 392 (+1.79%) |
+  | `.rodata` | 6 077 078 | 6 219 438 | +142 360 |
+  | `.init.text` | 411 104 | 435 128 | +24 024 |
+  | `Image` | 37 075 456 | 38 189 568 | +1 114 112 (+3.01%) |
+  | build wall time | 4m13s | 4m56s | +43s |
+  | per-file objects | ELF relocatable | LLVM IR bitcode | |
+
+  ThinLTO makes this kernel larger, not smaller. Whether that costs anything at
+  runtime is what the device comparison decides; both variants say which one
+  they are, with `zcat /proc/config.gz | grep LTO`.
+- Still 6.6.144, still KASAN compiled in and off via `kasan=off`, still all 24
+  optimization patches, still BORE.
+
+Root: upstream KernelSU `main` + SUSFS, built in. No `init_boot.img` patching.
+
 ## v1.2 (6.6.144)
 
 - **EROFS LZ4 inplace margin narrowed from `(srcsize >> 2) + 32` to

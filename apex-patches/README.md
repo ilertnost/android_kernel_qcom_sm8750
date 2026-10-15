@@ -255,3 +255,28 @@ parameter (`z_erofs_get_lz4_decompress_inplace_margin`) rather than a constant,
 and that function has not been read off the running stock kernel. Porting it is
 the proper end state; until then these are measured constants, not the stock
 ones.
+
+## bbrv3 (applied, then reverted - not carried)
+
+BBRv3 was backported from `palazik/kernel_patches`
+(`common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.6.patch`,
+fatalcoder524, upstream commit `3bf381592fa3`) and made the default congestion
+control for one build. It boots and `bbr3` registers and is used, but on device
+it made mobile data several times worse, so it is reverted in full - including
+the ECN changes it carries in `net/ipv4/tcp_output.c`, which are not
+bbr3-only. No patch files are carried here; this note exists so the experiment
+is not repeated blindly.
+
+Two defects in that patch were found while it was applied, worth knowing if it
+is ever revisited: `0001` writes the comment `/* Caller made space either
+from:->` with a stray `->`, and four lines carry trailing whitespace or a space
+before a tab.
+
+## thinlto (config only, no patch)
+
+`CONFIG_LTO_CLANG_THIN=y` replaces `CONFIG_LTO_NONE=y` in
+`arch/arm64/configs/gki_defconfig`. There is no patch to vend, but it belongs
+here because it changes code generation for the whole tree. v1.1 and v1.2
+shipped `LTO_NONE` on the grounds that ThinLTO "slowed the read path"; that
+statement was never backed by a measurement, so v1.3 measures it instead of
+repeating it. Numbers are in CHANGELOG 1.3.

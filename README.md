@@ -6,7 +6,7 @@ Builds on the LineageOS `android_kernel_qcom_sm8750` tree at **6.6.144**
 (ASB-2026-10-05, GKI branch `android15-6.6`) and runs the device's
 **stock vendor modules unmodified**.
 
-Flavour: `v1.2` — upstream KernelSU main, SUSFS, BORE, memfd ashmem shim, ADIOS, NTsync
+Flavour: `v1.3` — upstream KernelSU main, SUSFS, BORE, memfd ashmem shim, ADIOS, NTsync, ThinLTO
 
 ---
 
@@ -270,6 +270,7 @@ Three maturity stages, named for what changes between them:
 | `v1.0 (Tempered)` | Hardened by testing, for daily use. |
 | `v1.1` | Adds BORE, the memfd ashmem shim, SukiSU Ultra main. See `CHANGELOG.md`. |
 | `v1.2` | Narrows the EROFS LZ4 inplace margin to `>> 6`, and replaces SukiSU Ultra with upstream KernelSU main, SUSFS still in-tree. See `CHANGELOG.md`. |
+| `v1.3` | Turns ThinLTO back on, with the measurement v1.1 never had; BBRv3 was tried and rejected on device evidence. See `CHANGELOG.md`. |
 
 ## Known cosmetic issue
 
@@ -294,7 +295,7 @@ different things:
   the community build workflows are written against 23.0-23.2, and Android 16
   is what has been verified on device.
 
-Kernel version string stays `APEX-Foundry-v1.2`; the two numbering schemes are
+Kernel version string stays `APEX-Foundry-v1.3`; the two numbering schemes are
 independent and never mixed.
 
 ## Layout
@@ -310,6 +311,10 @@ independent and never mixed.
 Verified on device: audio, Bluetooth, WLAN, charging and Droidspaces all work.
 v1.2 is reported working on device by the maintainer, with the EROFS oracle
 (`md5sum /system/lib64/libminikin.so` = `3b3f0ed6...`) holding.
+
+v1.3 has not been released. A v1.3 build boots on device; the comparison that
+decides between `LTO_CLANG_THIN` and `LTO_NONE` is still open. BBRv3 was tried
+and removed - see `CHANGELOG.md`.
 
 ## Acknowledgements
 
