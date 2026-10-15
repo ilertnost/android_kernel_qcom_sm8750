@@ -12,23 +12,35 @@
  * byte-identical between the HyperOS 3 and HyperOS 4 kernels (3072 bytes each,
  * verified from the stock BTF), so all of this is in-memory bookkeeping.
  *
- * The container layout and the three recovery'd entry points below were taken
- * from the HyperOS 4 binary (f2fs_vip_bsearch / f2fs_vip_insert /
- * f2fs_vip_remove) and reproduce its behaviour:
+ * The three recovery'd entry points below were taken from the HyperOS 4 binary
+ * (f2fs_vip_bsearch / f2fs_vip_insert / f2fs_vip_remove):
  *
  *   f2fs_vip_bsearch(nm_i, ino, &found)
  *       - returns 0 with *found == false when count == 0
  *       - otherwise binary-searches sorted[], returning the entry index, or
  *         the insertion point with *found == false
  *   f2fs_vip_remove(sbi, ino)
- *       - EOPNOTSUPP when the containers are not allocated (stock returns -95)
- *       - ENOENT when the nid is absent (stock returns -2)
- *       - otherwise memmoves the tail of sorted[] down, decrements count and
- *         drops the entry from the unsorted ring
+ *       - no-op when the set is not allocated (stock returns -95)
+ *       - no-op when the nid is absent (stock returns -2)
+ *       - otherwise memmoves the tail of sorted[] down and decrements count
  *   f2fs_vip_insert(sbi, ino)
- *       - appends to the unsorted ring while it has room; once the ring is
- *         full its contents are merged into sorted[] (which grows by doubling)
- *         and the ring is reset
+ *       - inserts into sorted[], doubling it when it is full
+ *
+ * The stock container is a sorted array plus an "unsorted" ring buffer that is
+ * merged into the sorted array once it fills up.  That ring is a batching
+ * optimisation and is NOT reproduced here, for two reasons:
+ *
+ *   - entries parked in the ring are invisible to f2fs_vip_bsearch(), hence to
+ *     f2fs_is_vip_inode()/f2fs_iget(): the first 15 pinned nids were never
+ *     reported as VIP, and sorted[] only became non-empty when the 16th entry
+ *     flushed the ring;
+ *   - the ring stores a per-entry index (unsorted_idx) that is only valid
+ *     until the first flush, after which those indices point into a different,
+ *     freshly filled ring, so remove-by-index corrupts the ring bookkeeping.
+ *
+ * F2FS_IOC_SET_PIN_FILE is a cold path (one call per pinned file), so an
+ * O(count) insertion into a short sorted array costs nothing measurable and
+ * keeps every lookup exact.
  *
  * Call sites recovered in the HyperOS 4 binary:
  *   f2fs_iget            -> f2fs_vip_bsearch   (stamp FI_VIP on the inode)
@@ -45,163 +57,155 @@
 /*
  * f2fs_vip_bsearch - binary search sorted[] by ino
  *
- * Callers must hold vip->lock, or otherwise exclude concurrent mutation.
+ * Returns the index of @ino when *found is true, otherwise the insertion point
+ * for @ino.  Callers must hold vip->lock, or otherwise exclude concurrent
+ * mutation.
  */
 unsigned int f2fs_vip_bsearch(struct f2fs_nm_info *nm_i, nid_t ino, bool *found)
 {
 	struct f2fs_vip_manager *vip = &nm_i->vip;
-	unsigned int lo = 0, hi, mid;
+	unsigned int lo = 0, hi = vip->count;
 
 	*found = false;
 
-	if (vip->count == 0)
-		return 0;
+	/*
+	 * Plain lower_bound over [0, count).
+	 *
+	 * The previous version used `hi = count - 1` together with `hi = mid - 1`
+	 * on unsigned ints.  For a key below sorted[0] the search walks down to
+	 * lo == hi == 0, that probe sets hi = 0 - 1 = UINT_MAX, and from there
+	 * `(int)(hi - lo)` is -1, the `diff++` correction turns it back into 0,
+	 * so mid stays 0, lo stays 0 and the loop never terminates.  It spun
+	 * with vip->lock held and IRQs disabled by spin_lock_irqsave(), wedging
+	 * the CPU (soft lockup / RCU stall) and every other f2fs_iget() with it.
+	 */
+	while (lo < hi) {
+		unsigned int mid = lo + (hi - lo) / 2;
 
-	hi = vip->count - 1;
-
-	while (lo <= hi) {
-		int diff = (int)(hi - lo);
-
-		if (diff < 0)
-			diff++;
-		mid = lo + ((unsigned int)diff >> 1);
-
-		if (vip->sorted[mid].ino == ino) {
-			*found = true;
-			return mid;
+		if (vip->sorted[mid].ino < ino) {
+			lo = mid + 1;
+			continue;
 		}
 
-		if (vip->sorted[mid].ino < ino)
-			lo = mid + 1;
-		else
-			hi = mid - 1;
+		if (vip->sorted[mid].ino == ino)
+			*found = true;
+		hi = mid;
 	}
 
 	return lo;
 }
 
-static int f2fs_vip_grow_sorted(struct f2fs_vip_manager *vip)
+/*
+ * f2fs_vip_grow - double sorted[].
+ *
+ * Called from f2fs_vip_insert() *before* it takes vip->lock: kvmalloc_array()
+ * may sleep, and the set is protected by a spinlock taken with
+ * spin_lock_irqsave(), where sleeping is not allowed.  The state is re-checked
+ * under the lock, so losing a race with another grower only wastes one
+ * allocation.  The old array is released after the lock is dropped, once no
+ * lookups can still be walking it.
+ */
+static int f2fs_vip_grow(struct f2fs_nm_info *nm_i)
 {
-	unsigned int new_cap = vip->capacity * 2;
-	struct vip_inode_sorted *ns;
+	struct f2fs_vip_manager *vip = &nm_i->vip;
+	struct vip_inode_sorted *ns, *old;
+	unsigned int old_cap, new_cap;
+	unsigned long flags;
 
+	old_cap = READ_ONCE(vip->capacity);
+	new_cap = old_cap * 2;
 	if (new_cap < F2FS_VIP_SORTED_MIN)
 		new_cap = F2FS_VIP_SORTED_MIN;
+	if (new_cap < old_cap || new_cap > F2FS_VIP_SORTED_MAX)
+		return -EINVAL;
 
-	ns = kvmalloc_array(new_cap, sizeof(*ns), GFP_KERNEL);
+	ns = kvmalloc_array(new_cap, sizeof(*ns), GFP_NOFS);
 	if (!ns)
 		return -ENOMEM;
+
+	spin_lock_irqsave(&vip->lock, flags);
+
+	if (!vip->sorted) {
+		spin_unlock_irqrestore(&vip->lock, flags);
+		kvfree(ns);
+		return -EOPNOTSUPP;
+	}
+
+	if (vip->capacity != old_cap) {
+		spin_unlock_irqrestore(&vip->lock, flags);
+		kvfree(ns);
+		return 0;
+	}
 
 	if (vip->count)
 		memcpy(ns, vip->sorted, vip->count * sizeof(*ns));
 
-	kvfree(vip->sorted);
+	old = vip->sorted;
 	vip->sorted = ns;
 	vip->capacity = new_cap;
+
+	spin_unlock_irqrestore(&vip->lock, flags);
+
+	kvfree(old);
 
 	return 0;
 }
 
-/* Merge every pending ring entry into sorted[]. vip->lock must be held. */
-static void f2fs_vip_merge_ring(struct f2fs_nm_info *nm_i)
-{
-	struct f2fs_vip_manager *vip = &nm_i->vip;
-
-	while (vip->unsorted_head != vip->unsorted_tail) {
-		nid_t ino = vip->unsorted[vip->unsorted_head].ino;
-		unsigned int idx;
-		bool found;
-		int ret;
-
-		if (vip->count >= vip->capacity) {
-			ret = f2fs_vip_grow_sorted(vip);
-			if (ret)
-				return;
-		}
-
-		idx = f2fs_vip_bsearch(nm_i, ino, &found);
-		if (found) {
-			vip->unsorted_head = (vip->unsorted_head + 1) %
-					     vip->unsorted_buf_size;
-			continue;
-		}
-
-		memmove(&vip->sorted[idx + 1], &vip->sorted[idx],
-			(vip->count - idx) * sizeof(*vip->sorted));
-		vip->sorted[idx].ino = ino;
-		vip->sorted[idx].unsorted_idx = vip->unsorted_head;
-		vip->count++;
-
-		vip->unsorted_head = (vip->unsorted_head + 1) %
-				     vip->unsorted_buf_size;
-	}
-
-	vip->unsorted_head = vip->unsorted_tail = 0;
-}
-
 /*
  * f2fs_vip_insert - add @ino to the VIP set.
- * Returns 0 on success or when the entry already exists, -ENOMEM when the
- * sorted array cannot grow, -EOPNOTSUPP when the set is not usable.
+ *
+ * Returns 0 on success, when the entry already exists, or when the feature is
+ * off; -ENOMEM when the sorted array cannot grow, -EOPNOTSUPP when the set is
+ * not usable, -ENOSPC when a growth race left the array full again.
  */
 int f2fs_vip_insert(struct f2fs_sb_info *sbi, nid_t ino)
 {
 	struct f2fs_nm_info *nm_i = sbi->nm_info;
 	struct f2fs_vip_manager *vip;
 	unsigned long flags;
+	unsigned int idx;
 	bool found;
 	int ret = 0;
 
-	if (!nm_i)
-		return -EOPNOTSUPP;
+	if (!nm_i || !READ_ONCE(nm_i->vip.sorted) || !READ_ONCE(nm_i->vip.enabled))
+		return 0;
 	vip = &nm_i->vip;
+
+	/*
+	 * Make room *before* taking the lock: kvmalloc_array() with GFP_KERNEL
+	 * inside the spinlocked section below would be a "sleeping function
+	 * called from invalid context" bug, since vip->lock is taken with
+	 * spin_lock_irqsave() (IRQs off).
+	 */
+	if (READ_ONCE(vip->count) >= READ_ONCE(vip->capacity)) {
+		ret = f2fs_vip_grow(nm_i);
+		if (ret)
+			return ret;
+	}
 
 	spin_lock_irqsave(&vip->lock, flags);
 
-	if (!vip->sorted || !vip->unsorted) {
+	if (!vip->sorted) {
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
 
-	f2fs_vip_bsearch(nm_i, ino, &found);
+	if (!vip->enabled)		/* switched off meanwhile: no-op */
+		goto out;
+
+	idx = f2fs_vip_bsearch(nm_i, ino, &found);
 	if (found)
 		goto out;
 
-	if (f2fs_vip_unsorted_count(vip) + 1 < vip->unsorted_buf_size) {
-		vip->unsorted[vip->unsorted_tail].ino = ino;
-		vip->unsorted_tail = (vip->unsorted_tail + 1) %
-				     vip->unsorted_buf_size;
+	if (vip->count >= vip->capacity) {	/* lost the race with a grower */
+		ret = -ENOSPC;
 		goto out;
 	}
 
-	/* Ring is full: flush it and push this nid through the same path. */
-	if (vip->count >= vip->capacity) {
-		ret = f2fs_vip_grow_sorted(vip);
-		if (ret)
-			goto out;
-	}
-
-	f2fs_vip_merge_ring(nm_i);
-
-	f2fs_vip_bsearch(nm_i, ino, &found);
-	if (found)
-		goto out;
-
-	if (vip->count >= vip->capacity) {
-		ret = f2fs_vip_grow_sorted(vip);
-		if (ret)
-			goto out;
-	}
-
-	{
-		unsigned int idx = f2fs_vip_bsearch(nm_i, ino, &found);
-
-		memmove(&vip->sorted[idx + 1], &vip->sorted[idx],
-			(vip->count - idx) * sizeof(*vip->sorted));
-		vip->sorted[idx].ino = ino;
-		vip->sorted[idx].unsorted_idx = vip->unsorted_head;
-		vip->count++;
-	}
+	memmove(&vip->sorted[idx + 1], &vip->sorted[idx],
+		(vip->count - idx) * sizeof(*vip->sorted));
+	vip->sorted[idx].ino = ino;
+	vip->count++;
 out:
 	spin_unlock_irqrestore(&vip->lock, flags);
 	return ret;
@@ -209,7 +213,9 @@ out:
 
 /*
  * f2fs_vip_remove - drop @ino from the VIP set.
- * Returns 0, -EOPNOTSUPP when the set is not allocated, -ENOENT when absent.
+ *
+ * No-op when the set is not allocated (stock returns -95) or when the nid is
+ * absent (stock returns -2); otherwise memmoves the tail of sorted[] down.
  */
 void f2fs_vip_remove(struct f2fs_sb_info *sbi, nid_t ino)
 {
@@ -225,29 +231,16 @@ void f2fs_vip_remove(struct f2fs_sb_info *sbi, nid_t ino)
 
 	spin_lock_irqsave(&vip->lock, flags);
 
-	if (!vip->sorted || !vip->unsorted)
+	if (!vip->sorted)
 		goto out;
 
 	idx = f2fs_vip_bsearch(nm_i, ino, &found);
 	if (!found)
 		goto out;
 
-	if (vip->sorted[idx].unsorted_idx < vip->unsorted_tail) {
-		memmove(&vip->unsorted[vip->sorted[idx].unsorted_idx],
-			&vip->unsorted[vip->sorted[idx].unsorted_idx + 1],
-			(vip->unsorted_tail - vip->sorted[idx].unsorted_idx - 1) *
-			sizeof(*vip->unsorted));
-		vip->unsorted_tail--;
-	}
-
 	memmove(&vip->sorted[idx], &vip->sorted[idx + 1],
 		(vip->count - idx - 1) * sizeof(*vip->sorted));
 	vip->count--;
-
-	/* The remaining entries keep pointing one slot too low after the shift. */
-	for (idx = 0; idx < vip->count; idx++)
-		if (vip->sorted[idx].unsorted_idx > 0)
-			vip->sorted[idx].unsorted_idx--;
 out:
 	spin_unlock_irqrestore(&vip->lock, flags);
 }
@@ -259,20 +252,28 @@ out:
  * the quota inodes *before* f2fs_build_node_manager() has run, so sbi->nm_info
  * is still NULL there. Guard for it, not only for safety: an unguarded
  * sbi->nm_info->vip dereference panics during mount.
+ *
+ * This is a hot path (once per f2fs_iget()), so the feature flag and the
+ * (empty) count are checked before taking the lock.
  */
 bool f2fs_is_vip_inode(struct f2fs_sb_info *sbi, nid_t ino)
 {
+	struct f2fs_nm_info *nm_i = READ_ONCE(sbi->nm_info);
 	struct f2fs_vip_manager *vip;
 	unsigned long flags;
-	bool found;
+	bool found = false;
 
-	if (!sbi->nm_info || !sbi->nm_info->vip.sorted)
+	if (!nm_i || !READ_ONCE(nm_i->vip.sorted))
 		return false;
 
-	vip = &sbi->nm_info->vip;
+	vip = &nm_i->vip;
+
+	if (!READ_ONCE(vip->enabled) || !READ_ONCE(vip->count))
+		return false;
 
 	spin_lock_irqsave(&vip->lock, flags);
-	f2fs_vip_bsearch(sbi->nm_info, ino, &found);
+	if (vip->sorted)
+		f2fs_vip_bsearch(nm_i, ino, &found);
 	spin_unlock_irqrestore(&vip->lock, flags);
 
 	return found;
@@ -411,23 +412,17 @@ int f2fs_vip_init(struct f2fs_nm_info *nm_i)
 {
 	struct f2fs_vip_manager *vip = &nm_i->vip;
 
+	vip->count = 0;
+	vip->enabled = 0;
 	vip->capacity = F2FS_VIP_SORTED_MIN;
-	vip->unsorted_buf_size = F2FS_VIP_UNSORTED_MIN;
 	vip->sorted = kvmalloc_array(vip->capacity, sizeof(*vip->sorted),
 				     GFP_KERNEL);
-	vip->unsorted = kvmalloc_array(vip->unsorted_buf_size,
-				       sizeof(*vip->unsorted), GFP_KERNEL);
-	if (!vip->sorted || !vip->unsorted) {
-		kvfree(vip->sorted);
-		kvfree(vip->unsorted);
-		vip->sorted = NULL;
-		vip->unsorted = NULL;
+	if (!vip->sorted) {
+		vip->capacity = 0;
 		return -ENOMEM;
 	}
 
 	vip->count = 0;
-	vip->unsorted_head = 0;
-	vip->unsorted_tail = 0;
 	spin_lock_init(&vip->lock);
 	vip->enabled = 1;	/* observed state on stock: vip_file_enable = 1 */
 
@@ -437,14 +432,21 @@ int f2fs_vip_init(struct f2fs_nm_info *nm_i)
 void f2fs_vip_destroy(struct f2fs_nm_info *nm_i)
 {
 	struct f2fs_vip_manager *vip = &nm_i->vip;
+	struct vip_inode_sorted *sorted;
+	unsigned long flags;
 
-	kvfree(vip->sorted);
-	kvfree(vip->unsorted);
+	/* f2fs_vip_init() may have failed, in which case nothing is allocated
+	 * and vip->lock was never initialised. */
+	if (!READ_ONCE(vip->sorted))
+		return;
+
+	spin_lock_irqsave(&vip->lock, flags);
+	sorted = vip->sorted;
 	vip->sorted = NULL;
-	vip->unsorted = NULL;
 	vip->count = 0;
 	vip->capacity = 0;
-	vip->unsorted_buf_size = 0;
-	vip->unsorted_head = vip->unsorted_tail = 0;
 	vip->enabled = 0;
+	spin_unlock_irqrestore(&vip->lock, flags);
+
+	kvfree(sorted);
 }
