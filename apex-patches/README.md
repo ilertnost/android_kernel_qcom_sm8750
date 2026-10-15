@@ -279,4 +279,5 @@ before a tab.
 here because it changes code generation for the whole tree. v1.1 and v1.2
 shipped `LTO_NONE` on the grounds that ThinLTO "slowed the read path"; that
 statement was never backed by a measurement, so v1.3 measures it instead of
-repeating it. Numbers are in CHANGELOG 1.3.
+repeating it. Numbers are in CHANGELOG 1.3; it is carried without a claimed
+gain.

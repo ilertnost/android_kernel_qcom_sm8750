@@ -5,21 +5,32 @@ not.
 
 ## v1.3 (6.6.144)
 
-- **BBRv3 was tried and rejected on device evidence.** The backport from
-  `palazik/kernel_patches` (`common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.6.patch`,
-  fatalcoder524, upstream commit `3bf381592fa3`) was applied and made the
-  default congestion control (`CONFIG_TCP_CONG_BBR3=y`, `CONFIG_DEFAULT_BBR3=y`).
-  The kernel boots, `bbr3` registers and is used. Mobile data then became
-  several times worse, so the patch is reverted in full - including the ECN
-  changes it makes in `net/ipv4/tcp_output.c`, which apply to every socket, not
-  only to bbr3. `cubic` is the default again, as in v1.1 and v1.2. The
-  experiment and the two defects found in that upstream patch are recorded in
-  `apex-patches/README.md`.
-- **ThinLTO enabled, and measured this time.** v1.1 removed it on the statement
-  that it "slowed the read path"; that statement was never backed by a number.
-  v1.3 builds one source twice - `CONFIG_LTO_CLANG_THIN=y` and
-  `CONFIG_LTO_NONE=y` - and puts the difference in the table instead of
-  repeating the claim.
+- **f2fs VIP search rewritten - it could hang the kernel.** `f2fs_vip_bsearch()`
+  spun forever when asked for an inode below `sorted[0]`: `hi = count - 1`
+  combined with `hi = mid - 1` on unsigned ints underflows to `UINT_MAX`, so
+  `(int)(hi - lo)` is -1, the `diff++` correction turns that back into 0, and
+  `mid` and `lo` stay 0 forever. All of it ran with `vip->lock` held under
+  `spin_lock_irqsave()`, i.e. with IRQs off, so the CPU wedged and every other
+  `f2fs_iget()` blocked on the same lock. It took 16 pins to trigger: the first
+  15 only land in the unsorted ring, the 16th flushes the ring into `sorted[]`,
+  and from then on a lookup of an older inode hangs - which is the "panic after
+  installing several DSU partitions" report. Fix by 3aTup0k (pull request #2):
+  a plain `lower_bound` over `[0, count)`, the unsorted ring dropped (its
+  entries were invisible to the search anyway, so the first 15 pinned nids were
+  never reported as VIP), `sorted[]` grown before the lock is taken instead of
+  `kvmalloc(GFP_KERNEL)` inside it, and `vip.enabled` honoured in insert and
+  lookup.
+- **SUSFS integration refreshed** to `susfs4ksu` `gki-android15-6.6` @
+  `2d11d711` (2026-10-14), and the build instructions rewritten for the plain
+  `make` + clang method. Both landed after the v1.2 tag; the SUSFS detail is in
+  the v1.2 section below.
+- **`CONFIG_TRIM_UNUSED_KSYMS` is now explicitly off.** No behaviour change -
+  the Kconfig default is already off - but the intent is in the file now, and
+  it matters because the stock vendor modules link against the full ksymtab.
+- **ThinLTO is on.** v1.1 removed it on the statement that it "slowed the read
+  path"; that statement was never backed by a number. v1.3 measures it instead
+  of repeating it, by building one source twice - `CONFIG_LTO_CLANG_THIN=y`
+  against `CONFIG_LTO_NONE=y`:
 
   | same source, clang r510928, 16 cores | LTO_NONE | ThinLTO | delta |
   |---|---|---|---|
@@ -30,9 +41,19 @@ not.
   | build wall time | 4m13s | 4m56s | +43s |
   | per-file objects | ELF relocatable | LLVM IR bitcode | |
 
-  ThinLTO makes this kernel larger, not smaller. Whether that costs anything at
-  runtime is what the device comparison decides; both variants say which one
-  they are, with `zcat /proc/config.gz | grep LTO`.
+  ThinLTO makes this kernel larger, not smaller, so **no performance gain is
+  claimed for it** - it is carried on the same footing as BORE. Both variants
+  report which one they are: `zcat /proc/config.gz | grep LTO`.
+- **BBRv3 was tried and rejected on device evidence.** The backport from
+  `palazik/kernel_patches` (`common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.6.patch`,
+  fatalcoder524, upstream commit `3bf381592fa3`) was applied and made the
+  default congestion control (`CONFIG_TCP_CONG_BBR3=y`, `CONFIG_DEFAULT_BBR3=y`).
+  The kernel boots, `bbr3` registers and is used. Mobile data then became
+  several times worse, so the patch is reverted in full - including the ECN
+  changes it makes in `net/ipv4/tcp_output.c`, which apply to every socket, not
+  only to bbr3. `cubic` is the default again, as in v1.1 and v1.2; plain `bbr`
+  stays available. The experiment and the two defects found in that upstream
+  patch are recorded in `apex-patches/README.md`.
 - Still 6.6.144, still KASAN compiled in and off via `kasan=off`, still all 24
   optimization patches, still BORE.
 

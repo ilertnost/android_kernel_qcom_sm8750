@@ -312,9 +312,9 @@ Verified on device: audio, Bluetooth, WLAN, charging and Droidspaces all work.
 v1.2 is reported working on device by the maintainer, with the EROFS oracle
 (`md5sum /system/lib64/libminikin.so` = `3b3f0ed6...`) holding.
 
-v1.3 has not been released. A v1.3 build boots on device; the comparison that
-decides between `LTO_CLANG_THIN` and `LTO_NONE` is still open. BBRv3 was tried
-and removed - see `CHANGELOG.md`.
+v1.3 has not been released yet. Its ThinLTO build boots on device; no runtime
+gain is claimed for ThinLTO, and BBRv3 was tried and removed - see
+`CHANGELOG.md`.
 
 ## Acknowledgements
 
