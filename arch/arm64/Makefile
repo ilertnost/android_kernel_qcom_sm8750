@@ -97,9 +97,14 @@ else ifeq ($(CONFIG_AS_HAS_ARMV8_2), y)
 endif
 
 ifdef asm-arch
-KBUILD_CFLAGS	+= -Wa,-march=$(asm-arch) \
-		   -DARM64_ASM_ARCH='"$(asm-arch)"'
+KBUILD_CFLAGS	+= -DARM64_ASM_ARCH='"$(asm-arch)"'
 endif
+
+# Target ISA: Oryon (SM8750) is ARMv9.2-A, so target it directly instead of
+# letting clang default every translation unit to armv8-a. This is the only ISA
+# flag: with the integrated assembler the architecture comes from the compiler,
+# so no separate -Wa,-march is passed.
+KBUILD_CFLAGS	+= -march=armv9.2-a+crypto+dotprod
 
 ifeq ($(CONFIG_SHADOW_CALL_STACK), y)
 KBUILD_CFLAGS	+= -ffixed-x18

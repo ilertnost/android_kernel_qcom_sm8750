@@ -1,38 +1,22 @@
 diff --git a/build.config.gki b/build.config.gki
-index 1bf34d3c5..7063390c9 100644
+index 1bf34d3c5..7aeeeba31 100644
 --- a/build.config.gki
 +++ b/build.config.gki
-@@ -1,2 +1,42 @@
+@@ -1,2 +1,26 @@
  DEFCONFIG=gki_defconfig
  POST_DEFCONFIG_CMDS=""
 +
 +# Target ISA.
 +#
 +# The kernel had no -march at all, so clang defaulted every translation unit
-+# to armv8-a. Oryon is ARMv9.2 and has these extensions in hardware.
++# to armv8-a. Oryon (SM8750) is ARMv9.2-A, so target it directly.
 +#
-+# The baseline is armv8-a with features added, not armv9.2-a, and that is the
-+# whole point. ARMv9.2 mandates SVE2, and clang acts on it rather than
-+# requiring an opt-in: with -march=armv9.2-a it vectorises an ordinary float
-+# loop into
++# This is the Kleaf/legacy build.sh path. The plain `make` build documented in
++# README.md reads the same value from KBUILD_CFLAGS in arch/arm64/Makefile.
 +#
-+#     ptrue  p0.s
-+#     addvl  x11, x0, #1
-+#     ld1w   { z1.s }, p0/z, [x0, x10, lsl #2]
-+#     fadda  s0, p0, s0, z1.s
-+#
-+# which in kernel code means the kernel writing z registers it has no mandate
-+# to save, trampling application SVE state on every exception entry.
-+# __ARM_FEATURE_SVE and __ARM_FEATURE_SVE2 both come out defined for armv9.2-a.
-+#
-+# -mno-sve and -mno-sve2 are not usable as a way out: this clang rejects both
-+# with "unknown argument". Disabling SVE by feature name is not available
-+# either. Keeping the baseline at armv8-a is the mechanism, not a compromise.
-+#
-+# Verified with -dM -E that this line enables exactly DOTPROD,
-+# FP16_SCALAR_ARITHMETIC, FP16_VECTOR_ARITHMETIC and MATMUL_INT8, and that
-+# SVE, SVE2, BF16, SHA3, RCPC3 and LSE stay off. armv8.6-a was considered and
-+# rejected: it adds BF16, which nothing here needs.
++# armv9.2-a defines __ARM_FEATURE_SVE and __ARM_FEATURE_SVE2. Kernel C code is
++# compiled with -mgeneral-regs-only, which keeps the vectoriser off, so no SVE
++# is emitted there.
 +#
 +# Left out on purpose:
 +#
@@ -44,5 +28,4 @@ index 1bf34d3c5..7063390c9 100644
 +# and mobile I-cache is small enough that it can measure negative.
 +#
 +# -fomit-frame-pointer. Already added by the top level Makefile at line 889.
-+KCFLAGS="${KCFLAGS} -march=armv8-a+dotprod+fp16+i8mm"
-\ No newline at end of file
++KCFLAGS="${KCFLAGS} -march=armv9.2-a+crypto+dotprod"

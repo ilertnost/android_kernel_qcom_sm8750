@@ -90,15 +90,19 @@ are documented in `kernelsu/README.md`.
 
 ## isa/
 
-`0001_target_oryon_isa.patch` sets `-march=armv8-a+dotprod+fp16+i8mm` in
-`build.config.gki`. The kernel previously carried no `-march` at all.
+`0001_target_oryon_isa.patch` sets `-march=armv9.2-a+crypto+dotprod` in
+`build.config.gki`. The kernel previously carried no `-march` at all, so clang
+defaulted every translation unit to `armv8-a`.
 
-The baseline stays `armv8-a` on purpose. ARMv9.2 mandates SVE2 and clang treats
-that as already enabled, so `-march=armv9.2-a` makes it vectorise ordinary
-loops into `ptrue`/`addvl`/`ld1w { z12.s }`, which kernel code must never emit.
-`-mno-sve` and `-mno-sve2` are rejected by this clang. Verified with `-dM -E`
-that only `DOTPROD`, `FP16_SCALAR_ARITHMETIC`, `FP16_VECTOR_ARITHMETIC` and
-`MATMUL_INT8` come on.
+The same value is set as `KBUILD_CFLAGS` in `arch/arm64/Makefile`, which is what
+the plain `make` build in `README.md` reads. With the integrated assembler
+(`LLVM_IAS=1`) the architecture comes from the compiler, so the separate
+`-Wa,-march=armv8.5-a` is not passed.
+
+`armv9.2-a` defines `__ARM_FEATURE_SVE` and `__ARM_FEATURE_SVE2`. Kernel C code
+is compiled with `-mgeneral-regs-only`, which keeps the vectoriser off: with
+that flag a float loop compiles without SVE instructions, so no `z` register is
+written.
 
 ## kmi/
 
