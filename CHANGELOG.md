@@ -54,6 +54,18 @@ not.
   only to bbr3. `cubic` is the default again, as in v1.1 and v1.2; plain `bbr`
   stays available. The experiment and the two defects found in that upstream
   patch are recorded in `apex-patches/README.md`.
+- **The kernel is now built for the Oryon ISA.** It carried no `-march` at all,
+  so clang defaulted every translation unit to `armv8-a`. The flag is
+  `-march=armv9.2-a+crypto+dotprod`, and it sits in the source
+  (`arch/arm64/Makefile`), not in the build command, so a plain `make` build
+  gets it. `armv9.2-a` turns on LSE atomics, CRC32, AES, SHA2, dotprod and
+  i8mm, all of which the SM8750's Oryon cores have. It also defines
+  `__ARM_FEATURE_SVE` and `__ARM_FEATURE_SVE2`; kernel C code is compiled with
+  `-mgeneral-regs-only`, which keeps the vectoriser off, so no `z` register is
+  written. The separate `-Wa,-march=armv8.5-a` was dropped - with the
+  integrated assembler the architecture comes from the compiler, so it was a
+  second, redundant ISA flag. `Image`: 38 189 568 -> 37 861 888 B. No
+  performance claim is made; the on-device comparison is open.
 - Still 6.6.144, still KASAN compiled in and off via `kasan=off`, still all 24
   optimization patches, still BORE.
 
