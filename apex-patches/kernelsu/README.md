@@ -1,9 +1,14 @@
 # Root: upstream KernelSU with in-tree SUSFS
 
-v1.2 replaces SukiSU Ultra with upstream
+v1.2 replaced SukiSU Ultra with upstream
 [`tiann/KernelSU`](https://github.com/tiann/KernelSU) `main`, with SUSFS
 grafted in from [`simonpunk/susfs4ksu`](https://gitlab.com/simonpunk/susfs4ksu),
 `gki-android15-6.6` tree.
+
+v1.4 moves both to their current revisions: KernelSU `main` at `6d31a613` and
+the SUSFS patches at `4a4cb1b`, which is the susfs4ksu commit that syncs its
+patch set with the official KernelSU `main`. The previous pair (KernelSU
+`0c0fdb96` = tag v3.3.1, susfs4ksu `2d11d711`) is what v1.2..v1.3 shipped.
 
 ## Why upstream KernelSU and not KernelSU-Next
 
@@ -17,31 +22,46 @@ ninety more symbols. None of those exist in `fs/susfs.c`, so "KernelSU-Next
 with built-in SUSFS" is not a combination that branch supports. KernelSU-Next
 also fails to build against the susfs4ksu patches.
 
-Upstream `main` is the base those patches are written against. Its
-`kernel/Kbuild` blob is `6c92a0130cdc`, which is exactly the pre-image recorded
-in `10_enable_susfs_for_ksu.patch`, and that patch applies with **0 of 97
-hunks failing**.
+## The pinned revisions
 
-Vendored at commit `0c0fdb96` of `tiann/KernelSU` `main`, which is tag
-`v3.3.1`, the current release (2680 commits, reported as KSU_VERSION 32680).
-The driver tree is byte-identical at `v3.3.1` and at the current `main` tip
-(`200818ca`, 2683 commits): between them only `manager/` and `userspace/ksud`
-moved, so there was nothing to update on the kernel side.
+Upstream `main` is the base those patches are written against. At `6d31a613`
+its `kernel/Kbuild` blob is `ee5af0ba`, which is exactly the pre-image recorded
+in `10_enable_susfs_for_ksu.patch`, so that patch applies with **no rejects**.
+
+Vendored at commit `6d31a613` of `tiann/KernelSU` `main` (2702 commits,
+reported as KSU_VERSION 32702).
 
 The SUSFS patches are `susfs4ksu` branch `gki-android15-6.6`, commit
-`2d11d711de80f0f749b3055f8da8f7b9682454e4` (2026-10-14), and are byte-for-byte
-what that branch ships. `fs/susfs.c`, `include/linux/susfs.h` and
-`include/linux/susfs_def.h` are identical between that commit and the earlier
-one vendored here, so the SUSFS version did not change - only the integration
-did. That revision moved 605 lines of duplicated SELinux internals out of the
-driver and into `security/selinux/ss/services.c`; see "Local changes" below.
+`4a4cb1b2` ("KernelSU: Sync with the official KernelSU main repo"), and are
+byte-for-byte what that branch ships. Compared with the revision vendored in
+v1.2..v1.3 (`2d11d711`), the kernel-side patch changed as follows:
+
+- SUSFS hooks now cooperate with KernelSU's `preinit` feature: `fs/exec.c`
+  gained `ksu_setup_preinit_file()` / `ksu_preinit_handle_post_execveat()`
+  calls, all under `#ifndef KSU_NO_PREINIT`;
+- the 605 lines of duplicated SELinux internals are no longer added to
+  `security/selinux/ss/services.c`; the driver calls `my_setprocattr()` from
+  `security/selinux/hooks.c` instead, so `services.c` is no longer patched at
+  all;
+- one hunk carries a post-6.6 context line (`vma_data_pages()` instead of
+  `vma_pages()`); this tree is 6.6, so the 6.6 spelling is kept and that hunk
+  is applied with one line of fuzz.
+
+`fs/susfs.c`, `include/linux/susfs.h` and `include/linux/susfs_def.h` are
+copied in from the same commit and are byte-identical to it.
+
+The UAPI headers moved with KernelSU: `drivers/uapi/supercall.h` is at
+`KERNEL_SU_UAPI_VERSION = 6` (`KSU_IOCTL_LOOKUP_SYMBOLS`,
+`KSU_GET_INFO_FLAG_PREINIT`, preinit/modules.rc under `/metadata/vold/ksu`).
+The other five headers (`app_profile.h`, `feature.h`, `ksu.h`, `selinux.h`,
+`sulog.h`) are unchanged from v1.4.
 
 ## The patches in this directory
 
 | File | What it is |
 |---|---|
 | `10_enable_susfs_for_ksu.patch` | Upstream susfs4ksu. Adds the SUSFS wiring and the `CONFIG_KSU_SUSFS*` Kconfig menu to the KSU driver. Apply with `a/kernel/` rewritten to `a/drivers/kernelsu/`. |
-| `50_add_susfs_in_gki-android15-6.6.patch` | Upstream susfs4ksu. The kernel-side SUSFS integration: hooks in `fs/`, `kernel/`, `mm/`, `security/selinux/hooks.c` and `security/selinux/selinuxfs.c`, plus the `my_security_*` re-implementations of the SELinux internals in `security/selinux/ss/services.c` that those hooks call. |
+| `50_add_susfs_in_gki-android15-6.6.patch` | Upstream susfs4ksu. The kernel-side SUSFS integration: hooks in `fs/`, `kernel/`, `mm/`, `security/selinux/hooks.c` and `security/selinux/selinuxfs.c`. |
 | `Kbuild.reference` | The driver `Kbuild` as built here, kept because one hunk of it is local: the version pin. |
 
 Both patches are byte-for-byte what susfs4ksu ships. Neither is modified.
@@ -50,14 +70,13 @@ Both patches are byte-for-byte what susfs4ksu ships. Neither is modified.
 
 ```bash
 # 0. pin the sources
-#    KernelSU : tag v3.3.1, commit 0c0fdb96. The kernel/ tree is identical at
-#               the current main tip (200818ca), so either works.
-#    susfs4ksu: branch gki-android15-6.6, commit 2d11d711
+#    KernelSU : main @ 6d31a613 (2702 commits)
+#    susfs4ksu: branch gki-android15-6.6 @ 4a4cb1b
 
 # 1. vendor the driver and its UAPI headers
-cp -r <KernelSU 0c0fdb96>/kernel      common/drivers/kernelsu
+cp -r <KernelSU 6d31a613>/kernel      common/drivers/kernelsu
 mkdir -p common/drivers/uapi
-cp <KernelSU 0c0fdb96>/uapi/*.h       common/drivers/uapi/
+cp <KernelSU 6d31a613>/uapi/*.h       common/drivers/uapi/
 #    include/uapi inside the driver is a symlink to ../../uapi, which points
 #    outside the repo once kernel/ lives under drivers/
 
@@ -83,7 +102,7 @@ Then enable `CONFIG_KSU=y` and the ten `CONFIG_KSU_SUSFS*` options in
 
 ## Local changes to the vendored driver
 
-Exactly one is needed with the current patches.
+Exactly one is needed.
 
 ### 1. `drivers/kernelsu/Kbuild` - the version pin
 
@@ -93,50 +112,31 @@ The version falls back to a sentinel when the git-derived path does not fire:
 ccflags-y += -DKSU_VERSION=16
 ```
 
-kleaf builds from a sandboxed copy of the tree with no `.git`, so the
-git-derived path never runs and the manager reads 16 - which its own numbering
-treats as an ancient kernel. It is pinned to the vendored revision instead:
+The driver lives inside the kernel repository here, so `GIT_ROOT` equals the
+kernel root and the git-derived path never runs: the manager would read 16,
+which its own numbering treats as an ancient kernel. It is pinned to the
+vendored revision instead:
 
 ```
-KSU_VERSION ?= 32680   # 30000 + 2680 commits
+KSU_VERSION ?= 32702   # 30000 + 2702 commits
 ```
 
-### 2. `feature/selinux_hide.c` - obsolete with this patch revision
+### 2. `feature/selinux_hide.c`, `fs/exec.c` - fixes from the v1.2 era, now moot
 
-The **earlier** `10_enable_susfs_for_ksu.patch` carried its own copy of the
-SELinux internals (`string_to_context_struct`,
-`security_context_to_sid_with_policy`, ... 605 lines) in the driver, and
-guarded two calls with `if (fn)`. Those names are real functions in this tree,
-so the test is always true and clang refuses it:
+The old `10_enable_susfs_for_ksu.patch` carried its own copy of the SELinux
+internals and guarded two calls with `if (fn)`; clang rejected the guard with
+`-Werror,-Wpointer-bool-conversion` and the `else` branch called a `static`
+symbol. That copy is gone from the patch, so the guard fix is gone with it.
 
-```
-error: address of function 'security_dump_masked_av_fn' will always evaluate
-       to 'true' [-Werror,-Wpointer-bool-conversion]
-```
-
-The second guard was worse: its `else` branch called `context_struct_compute_av`
-directly, and that symbol is `static` in `services.c`, so it would not link.
-Both guards were removed.
-
-The current revision drops those 605 lines from the driver entirely and declares
-the functions in `services.c` instead (`my_security_*`). There is no `if (fn)`
-left to fix, so that local change is gone with it.
-
-### 3. `fs/exec.c` - a leftover, not a patch fix
-
-`fs/exec.c` carried `extern bool __ksu_is_allow_uid_for_current(uid_t uid);`
-from the earlier SukiSU-era integration, not from the susfs4ksu patch. The
-symbol is defined in `drivers/kernelsu/policy/allowlist.c` and upstream's own
-code declares and calls it in `policy/allowlist.h` and `feature/sucompat.c`;
-the patch additionally declares and calls it in `fs/open.c` and `fs/stat.c`.
-`fs/exec.c` neither declared it for a caller nor used it, so the stray line was
-dropped. Reproducing this tree from the patches does not involve this file.
+The stray `extern bool __ksu_is_allow_uid_for_current(uid_t uid);` in
+`fs/exec.c` came from the SukiSU-era integration, not from the patch; it is
+still not added by the current patch revision.
 
 ## What was verified in the built image
 
 ```
-welcome to KernelSU version 32680
-Linux version 6.6.144-android15-8-4k-APEX-Foundry-v1.2
+welcome to KernelSU version 32702
+Linux version 6.6.144-4k-APEX-Foundry-v1.4
 strings Image | grep susfs:   -> present
 ```
 

@@ -12,6 +12,6 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode, int *_
 int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
 int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
                  void *argv_user, void *envp_user,
-                 int *__never_use_flags);
+                 int *flags);
 
 #endif
