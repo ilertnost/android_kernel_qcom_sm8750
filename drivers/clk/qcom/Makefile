@@ -20,7 +20,7 @@ clk-qcom-y += reset.o
 clk-qcom-y += clk-pm.o
 clk-qcom-y += clk-debug.o
 clk-qcom-$(CONFIG_QCOM_GDSC) += gdsc.o gdsc-debug.o
-# dummy clock removed: arch_initcall probe panics on 6.6.118-era DT (bisect V0)
+obj-$(CONFIG_COMMON_CLK_QCOM) += clk-dummy.o
 
 obj-$(CONFIG_QCOM_GDSC_REGULATOR) += gdsc-regulator.o
 
