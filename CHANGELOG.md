@@ -19,6 +19,19 @@ not.
   module-only drivers would never have loaded. Verified in the built image by
   the presence of `ch341-uart`, `cp210x`, `pl2303`, `ftdi_sio`, `ntfs3` and
   `udf`.
+- **Toolchain: clang 23.0.1 (r614150).** The build moved from clang 18.0.0
+  (r510928) to the clang 23.0.1 prebuilt. The first build silently changed the
+  CRC of 14 GPL symbols (`icc_*`, `of_icc_get*`, `io_uring_cmd_*`): genksyms
+  hashes attributes, and clang >= 18 emits `__counted_by()` on flexible array
+  members such as `struct icc_path`. Those symbols are imported by the prebuilt
+  vendor modules, so the switch would have broken UFS and the rest of the
+  vendor stack. The annotation is now hidden from the genksyms pass only
+  (`apex-patches/toolchain/`), and both `__kcrctab` tables are byte-for-byte
+  identical to the clang 18 build. Image: 38,259,200 bytes instead of
+  38,390,272.
+- **Unicode:** adopted the mainline `utf8byte()` empty-decomposition fix for
+  casefolded F2FS. The file matches upstream `kernel_qcom_sm8750` and mainline
+  6.6.144 byte for byte; the tree previously carried a different vendor variant.
 - **Deliberately not in this release:** the drm reverts that fix the flicker on
   old vendor kernels, and the UFS dev-command revert. The drm reverts were never
   validated on the current base, and the single build that carried them powered
@@ -31,7 +44,8 @@ not.
   gain and a visible regression on our measurements, so it is not included.
 
 Verified in the built image: `Linux version 6.6.144-4k-APEX-Foundry-v1.4+`,
-`KernelSU version 32680`, `susfs:` present, and the six driver strings above.
+`clang version 23.0.1`, `KernelSU version 32680`, `susfs:` present, and the six
+driver strings above.
 
 ## v1.3 (6.6.144)
 

@@ -44,6 +44,18 @@ than applying one static policy. Enabled with `CONFIG_MQ_IOSCHED_ADIOS=y`.
 Empty UTF-8 decomposition fix. Without it, cursor state is corrupted in F2FS
 normalization.
 
+## toolchain/
+
+`genksyms-ignore-counted_by.patch` hides `__counted_by` from the genksyms pass
+only. genksyms hashes the textual type of an exported symbol verbatim,
+attributes included, so a compiler that emits the annotation changes the CRC of
+every symbol whose signature references such a struct: with clang 23.0.1 that is
+14 GPL symbols (`icc_*`, `of_icc_get*`, `io_uring_cmd_*`) and the prebuilt
+vendor modules would refuse to load. The annotation has no ABI effect, so it
+stays enabled for the real compile and expands to nothing while `__GENKSYMS__`
+is defined. With the patch both `__kcrctab` tables are byte-for-byte identical
+to the clang 18.0.0 build.
+
 ## sukisu-ultra/
 
 **Legacy. Used through v1.1 only; v1.2 does not use this.** Kept for reference.
