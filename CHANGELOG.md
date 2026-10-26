@@ -49,6 +49,9 @@ not.
   included - the four-revert set was never validated on a device, and the
   single build that first carried it powered the test device off at the first
   touch; the bisection showed the clones revert alone is sufficient.
+  Caveat: on 6.6.118-based ROMs users have reported random reboots linked
+  to this drm revert - not reproduced or confirmed on-device yet, so on
+  6.6.118-era bases this build is experimental.
 - **UFS: revert of the device-command race fix (f77653a6), tip by
   @meyus23 (Telegram).** The backported "scsi: ufs: core: Fix a race condition
   related to device commands" is reverted: device commands go back to the
