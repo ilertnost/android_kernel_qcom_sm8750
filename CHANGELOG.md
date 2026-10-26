@@ -3,6 +3,47 @@
 Newest first. Each entry states what was verified and, where relevant, what was
 not.
 
+## v1.4 (6.6.144)
+
+- **KernelSU updated** to `tiann/KernelSU` `main` @ `6d31a613` (2702 commits,
+  KSU_VERSION 32702); v1.3 shipped `main` @ `0c0fdb96`, which is tag v3.3.1 and
+  2680 commits. The driver grew from 91 to 150 files: `preinit/`,
+  `hook/lsm_hook.c`, `hook/syscall_hook_manager.c`, `hook/tp_marker.c` and the
+  arm64 syscall hooks. `drivers/uapi/supercall.h` moves to UAPI 6
+  (`KSU_IOCTL_LOOKUP_SYMBOLS`, `KSU_GET_INFO_FLAG_PREINIT`); the other five UAPI
+  headers are unchanged. The version pin in `drivers/kernelsu/Kbuild` is the
+  only local change to the vendored driver, and `apex-patches/kernelsu/README.md`
+  records the revisions and the reproduction steps.
+- **SUSFS refreshed** to `susfs4ksu` `gki-android15-6.6` @ `4a4cb1b`, the commit
+  that syncs the patch set with the official KernelSU `main`. Its
+  `10_enable_susfs_for_ksu.patch` records `kernel/Kbuild` blob `ee5af0ba`, which
+  is exactly the vendored Kbuild, so it applies with no rejects. Against the
+  v1.3 revision the kernel-side patch now hooks KernelSU's preinit feature in
+  `fs/exec.c`, no longer adds the 605 duplicated SELinux internals to
+  `security/selinux/ss/services.c` (the driver calls `my_setprocattr()` from
+  `security/selinux/hooks.c` instead), and carries one post-6.6 context line -
+  this tree keeps the 6.6 `vma_pages()` spelling.
+- **OTG storage and USB serial ports.** NTFS3 (with LZX/XPRESS), UDF and
+  ISO9660+Joliet are built in, so a USB-C stick or an external SSD mounts
+  without a userspace helper. `USB_SERIAL` and its FTDI/CH341/CP210x/PL2303
+  bridges are now built in rather than modules: the zip ships only `Image`, so
+  module-only drivers would never have loaded. Verified in the built image by
+  the presence of `ch341-uart`, `cp210x`, `pl2303`, `ftdi_sio`, `ntfs3` and
+  `udf`.
+- **Deliberately not in this release:** the drm reverts that fix the flicker on
+  old vendor kernels, and the UFS dev-command revert. The drm reverts were never
+  validated on the current base, and the single build that carried them powered
+  the test device off at the first touch, needing a rollback; the UFS revert
+  rested on a hypothesis the `v1.4-oldROMfix` build already contradicts - it
+  carries the same UFS code and boots. Both are kept on the
+  `oldrom-drm-reverts` branch instead of being dropped.
+- **Measured and dropped.** `CONFIG_SLUB_DEBUG` cannot be disabled while
+  `CONFIG_KASAN=y`, because KASAN selects it. A BBRv3 backport produced no
+  gain and a visible regression on our measurements, so it is not included.
+
+Verified in the built image: `Linux version 6.6.144-4k-APEX-Foundry-v1.4+`,
+`KernelSU version 32702`, `susfs:` present, and the six driver strings above.
+
 ## v1.3 (6.6.144)
 
 - **f2fs VIP search rewritten - it could hang the kernel.** `f2fs_vip_bsearch()`
