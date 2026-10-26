@@ -3,6 +3,23 @@
 Newest first. Each entry states what was verified and, where relevant, what was
 not.
 
+## v1.4.1 (6.6.144)
+
+- **KernelSU rolled back** to the pair v1.3 shipped: `tiann/KernelSU` `main` @
+  `0c0fdb96` (tag v3.3.1, KSU_VERSION 32680, UAPI 5) and `susfs4ksu`
+  `gki-android15-6.6` @ `2d11d711`. The v1.4 driver (KSU_VERSION 32702, UAPI 6)
+  builds and loads, but the KernelSU manager refuses to work with it on the
+  test device, so root and modules are unusable. Reverting the driver and its
+  SUSFS patch set is the fix; the preinit code, `symbol_resolver` and the
+  UAPI 6 supercalls are gone with it.
+- **Nothing else changed.** The OTG config set, KASAN/KFENCE, BORE, the
+  scheduler, the DRM and UFS code are byte-identical to v1.4. The kernel name
+  is bumped to v1.4.1 so a device cannot be mistaken for the v1.4 build.
+- Bumped `CONFIG_LOCALVERSION` to `-4k-APEX-Foundry-v1.4.1`.
+
+Verified in the built image: `Linux version 6.6.144-4k-APEX-Foundry-v1.4.1+` and
+`KernelSU version 32680`.
+
 ## v1.4 (6.6.144)
 
 - **KernelSU updated** to `tiann/KernelSU` `main` @ `6d31a613` (2702 commits,
