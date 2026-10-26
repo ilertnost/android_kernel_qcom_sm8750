@@ -573,6 +573,41 @@ mode_valid(struct drm_atomic_state *state)
 	return 0;
 }
 
+/*
+ * The 6.6.77-era vendor display stack submits encoder configurations that
+ * the valid-clones check rejects, so on those bases the check must not run.
+ * Removing it outright wedges the 6.6.118-era stack at panel-off. Instead
+ * the check runs as upstream and self-disables for the rest of the boot the
+ * first time it rejects a commit: stacks that expect it never trip it,
+ * stacks that predate it lose it after one failed commit, exactly like the
+ * pre-check kernels. No per-ROM configuration.
+ */
+static bool apex_valid_clones_relaxed;
+
+static int drm_atomic_check_valid_clones(struct drm_atomic_state *state,
+					 struct drm_crtc *crtc)
+{
+	struct drm_encoder *drm_enc;
+	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state,
+									  crtc);
+
+	drm_for_each_encoder_mask(drm_enc, crtc->dev, crtc_state->encoder_mask) {
+		if (!drm_enc->possible_clones) {
+			DRM_DEBUG("enc%d possible_clones is 0\n", drm_enc->base.id);
+			continue;
+		}
+
+		if ((crtc_state->encoder_mask & drm_enc->possible_clones) !=
+		    crtc_state->encoder_mask) {
+			DRM_DEBUG("crtc%d failed valid clone check for mask 0x%x\n",
+				  crtc->base.id, crtc_state->encoder_mask);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 /**
  * drm_atomic_helper_check_modeset - validate state object for modeset changes
  * @dev: DRM device
@@ -744,6 +779,16 @@ drm_atomic_helper_check_modeset(struct drm_device *dev,
 		ret = drm_atomic_add_affected_planes(state, crtc);
 		if (ret != 0)
 			return ret;
+
+		if (!READ_ONCE(apex_valid_clones_relaxed)) {
+			ret = drm_atomic_check_valid_clones(state, crtc);
+			if (ret != 0) {
+				WRITE_ONCE(apex_valid_clones_relaxed, true);
+				DRM_WARN("apex: valid-clones check rejected crtc%d, relaxing for this boot\n",
+					 crtc->base.id);
+				ret = 0;
+			}
+		}
 	}
 
 	/*
