@@ -32,13 +32,34 @@ not.
 - **Unicode:** adopted the mainline `utf8byte()` empty-decomposition fix for
   casefolded F2FS. The file matches upstream `kernel_qcom_sm8750` and mainline
   6.6.144 byte for byte; the tree previously carried a different vendor variant.
-- **Deliberately not in this release:** the drm reverts that fix the flicker on
-  old vendor kernels, and the UFS dev-command revert. The drm reverts were never
-  validated on the current base, and the single build that carried them powered
-  the test device off at the first touch, needing a rollback; the UFS revert
-  rested on a hypothesis the `v1.4-oldROMfix` build already contradicts - it
-  carries the same UFS code and boots. Both are kept on the
-  `oldrom-drm-reverts` branch instead of being dropped.
+- **drm: single revert of the "valid clones" check fixes the flicker on old
+  vendor bases.** On ROMs that shipped with the 6.6.77 kernel (OS2.0.203/216
+  era) the display storms with `DisplayBase::PerformCommit: COMMIT failed: 11`,
+  `drmModeAtomicCommit failed with error 22 (Invalid argument). crtc=205` and
+  `trackPendingFrame: Invalid present fence` - 7795 rejected commits and 288
+  lost fences in a two-minute logcat window - so the screen shows a constant
+  black frame with the image appearing on top of it. The vendor `msm_drm`
+  module links against the drm core built into the `Image`, so the fix lands
+  in the kernel: the backported "drm: Add valid clones check" (`fe4a7145f048`,
+  upstream `41b4b11da021`) is reverted, restoring the pre-6.6.77
+  `drm_atomic_helper` behavior the vendor stack expects. On-device result with
+  this single revert: 0 `COMMIT failed`, 0 EINVAL, 0 `Invalid present fence`,
+  flicker gone. The other three 6.6.77-facing drm reverts that were carried
+  earlier (`dma_resv_wait_timeout`, encoder `mode_set`, DPMS) are **not**
+  included - the four-revert set was never validated on a device, and the
+  single build that first carried it powered the test device off at the first
+  touch; the bisection showed the clones revert alone is sufficient.
+- **UFS: revert of the device-command race fix (f77653a6), tip by
+  @meyus23 (Telegram).** The backported "scsi: ufs: core: Fix a race condition
+  related to device commands" is reverted: device commands go back to the
+  on-stack completion in `hba->dev_cmd.complete`. @meyus23 reports this stops
+  the reboots that happen when a Xiaomi 15 (dada) is plugged into a PC on
+  ROMs that shipped with the 6.6.77 kernel. For the record: on both test
+  bases the stock `ufs_qcom.ko` module ships its own copy of the ufshcd core
+  (`/proc/kallsyms` shows two `ufshcd_exec_dev_cmd` entries, and the stack
+  traces run the module's copy), so the Image-level revert does not replace
+  the code path the module executes; the revert is kept on the strength of
+  the PC-connect reports.
 - **Measured and dropped.** `CONFIG_SLUB_DEBUG` cannot be disabled while
   `CONFIG_KASAN=y`, because KASAN selects it. A BBRv3 backport produced no
   gain and a visible regression on our measurements, so it is not included.
