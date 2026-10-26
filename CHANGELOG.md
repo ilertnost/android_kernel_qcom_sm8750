@@ -3,43 +3,15 @@
 Newest first. Each entry states what was verified and, where relevant, what was
 not.
 
-## v1.4.1 (6.6.144)
-
-- **KernelSU rolled back** to the pair v1.3 shipped: `tiann/KernelSU` `main` @
-  `0c0fdb96` (tag v3.3.1, KSU_VERSION 32680, UAPI 5) and `susfs4ksu`
-  `gki-android15-6.6` @ `2d11d711`. The v1.4 driver (KSU_VERSION 32702, UAPI 6)
-  builds and loads, but the KernelSU manager refuses to work with it on the
-  test device, so root and modules are unusable. Reverting the driver and its
-  SUSFS patch set is the fix; the preinit code, `symbol_resolver` and the
-  UAPI 6 supercalls are gone with it.
-- **Nothing else changed.** The OTG config set, KASAN/KFENCE, BORE, the
-  scheduler, the DRM and UFS code are byte-identical to v1.4. The kernel name
-  is bumped to v1.4.1 so a device cannot be mistaken for the v1.4 build.
-- Bumped `CONFIG_LOCALVERSION` to `-4k-APEX-Foundry-v1.4.1`.
-
-Verified in the built image: `Linux version 6.6.144-4k-APEX-Foundry-v1.4.1+` and
-`KernelSU version 32680`.
-
 ## v1.4 (6.6.144)
 
-- **KernelSU updated** to `tiann/KernelSU` `main` @ `6d31a613` (2702 commits,
-  KSU_VERSION 32702); v1.3 shipped `main` @ `0c0fdb96`, which is tag v3.3.1 and
-  2680 commits. The driver grew from 91 to 150 files: `preinit/`,
-  `hook/lsm_hook.c`, `hook/syscall_hook_manager.c`, `hook/tp_marker.c` and the
-  arm64 syscall hooks. `drivers/uapi/supercall.h` moves to UAPI 6
-  (`KSU_IOCTL_LOOKUP_SYMBOLS`, `KSU_GET_INFO_FLAG_PREINIT`); the other five UAPI
-  headers are unchanged. The version pin in `drivers/kernelsu/Kbuild` is the
-  only local change to the vendored driver, and `apex-patches/kernelsu/README.md`
-  records the revisions and the reproduction steps.
-- **SUSFS refreshed** to `susfs4ksu` `gki-android15-6.6` @ `4a4cb1b`, the commit
-  that syncs the patch set with the official KernelSU `main`. Its
-  `10_enable_susfs_for_ksu.patch` records `kernel/Kbuild` blob `ee5af0ba`, which
-  is exactly the vendored Kbuild, so it applies with no rejects. Against the
-  v1.3 revision the kernel-side patch now hooks KernelSU's preinit feature in
-  `fs/exec.c`, no longer adds the 605 duplicated SELinux internals to
-  `security/selinux/ss/services.c` (the driver calls `my_setprocattr()` from
-  `security/selinux/hooks.c` instead), and carries one post-6.6 context line -
-  this tree keeps the 6.6 `vma_pages()` spelling.
+- **KernelSU stays at the v1.3 pair:** `tiann/KernelSU` `main` @ `0c0fdb96`
+  (tag v3.3.1, KSU_VERSION 32680, UAPI 5) with `susfs4ksu`
+  `gki-android15-6.6` @ `2d11d711`. The newer pair (`6d31a613` / `4a4cb1b`,
+  KSU_VERSION 32702, UAPI 6, `preinit`, `symbol_resolver`) was built for this
+  release and then dropped: it compiles and loads, but the KernelSU manager
+  refuses to work with it, leaving root and modules unusable. The update, its
+  SUSFS patch set and the UAPI 6 supercalls are not in this release.
 - **OTG storage and USB serial ports.** NTFS3 (with LZX/XPRESS), UDF and
   ISO9660+Joliet are built in, so a USB-C stick or an external SSD mounts
   without a userspace helper. `USB_SERIAL` and its FTDI/CH341/CP210x/PL2303
@@ -59,7 +31,7 @@ Verified in the built image: `Linux version 6.6.144-4k-APEX-Foundry-v1.4.1+` and
   gain and a visible regression on our measurements, so it is not included.
 
 Verified in the built image: `Linux version 6.6.144-4k-APEX-Foundry-v1.4+`,
-`KernelSU version 32702`, `susfs:` present, and the six driver strings above.
+`KernelSU version 32680`, `susfs:` present, and the six driver strings above.
 
 ## v1.3 (6.6.144)
 
