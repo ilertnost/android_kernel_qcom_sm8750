@@ -14,7 +14,6 @@
 #include <linux/mm.h>
 #endif
 
-#include "runtime/ksud.h"
 #include "feature/sulog.h"
 #include "infra/event_queue.h"
 #include "klog.h" // IWYU pragma: keep
@@ -54,6 +53,27 @@ static struct user_arg_ptr ksu_sulog_user_argv(const char __user *const __user *
 #endif
     argv.ptr.native = argv_user;
     return argv;
+}
+
+static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
+{
+	const char __user *native;
+
+#ifdef CONFIG_COMPAT
+	if (unlikely(argv.is_compat)) {
+		compat_uptr_t compat;
+
+		if (get_user(compat, argv.ptr.compat + nr))
+			return ERR_PTR(-EFAULT);
+
+		return compat_ptr(compat);
+	}
+#endif
+
+	if (get_user(native, argv.ptr.native + nr))
+		return ERR_PTR(-EFAULT);
+
+	return native;
 }
 
 static void ksu_sulog_fill_task_info(struct ksu_sulog_event *event, __u16 event_type, int retval)

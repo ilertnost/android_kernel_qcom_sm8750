@@ -45,13 +45,16 @@
 #include "ima.h"
 
 #ifdef CONFIG_KSU_SUSFS
+extern struct selinux_policy *backup_sepolicy;
 extern struct page *fake_status;
 extern struct static_key_false fake_status_initialize_key;
 extern bool ksu_selinux_hide_running __read_mostly;
 extern bool ksu_selinux_hide_enabled __read_mostly;
 extern void initialize_fake_status(void);
-extern ssize_t my_write_context(struct file *file, char *buf, size_t size);
-extern ssize_t my_write_access(struct file *file, char *buf, size_t size);
+extern void my_security_compute_av_user(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass, struct av_decision *avd);
+extern int my_security_sid_to_context(struct selinux_policy *policy, u32 sid, char **scontext, u32 *scontext_len);
+extern int my_security_context_to_sid(struct selinux_policy *policy, const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp);
+extern int my_security_context_str_to_sid(struct selinux_policy *policy, const char *scontext, u32 *sid, gfp_t gfp);
 #endif // #ifdef CONFIG_KSU_SUSFS
 
 enum sel_inos {
@@ -254,7 +257,6 @@ static int sel_open_handle_status(struct inode *inode, struct file *filp)
 			initialize_fake_status();
 	}
 #endif // #ifdef CONFIG_KSU_SUSFS
-
 	return 0;
 }
 
@@ -654,20 +656,45 @@ static ssize_t sel_write_context(struct file *file, char *buf, size_t size)
 	char *canon = NULL;
 	u32 sid, len;
 	ssize_t length;
+#ifdef CONFIG_KSU_SUSFS
+	bool should_check_current = (likely(current_uid().val >= 10000 && ksu_selinux_hide_running));
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	length = avc_has_perm(current_sid(), SECINITSID_SECURITY,
 			      SECCLASS_SECURITY, SECURITY__CHECK_CONTEXT, NULL);
 	if (length)
 		goto out;
 
+#ifdef CONFIG_KSU_SUSFS
+	if (should_check_current) {
+		length = my_security_context_to_sid(backup_sepolicy, buf, size, &sid, GFP_KERNEL);
+		if (length)
+			goto out;
+		goto bypass_orig_flow1;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 	length = security_context_to_sid(buf, size, &sid, GFP_KERNEL);
 	if (length)
 		goto out;
+
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow1:
+	if (should_check_current) {
+		length = my_security_sid_to_context(backup_sepolicy, sid, &canon, &len);
+		if (length)
+			goto out;
+		goto bypass_orig_flow2;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	length = security_sid_to_context(sid, &canon, &len);
 	if (length)
 		goto out;
 
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow2:
+#endif // #ifdef CONFIG_KSU_SUSFS
 	length = -ERANGE;
 	if (len > SIMPLE_TRANSACTION_LIMIT) {
 		pr_err("SELinux: %s:  context size (%u) exceeds "
@@ -681,14 +708,6 @@ out:
 	kfree(canon);
 	return length;
 }
-
-#ifdef CONFIG_KSU_SUSFS
-static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size) {
-	if ((likely(current_uid().val >= 10000 && ksu_selinux_hide_running)))
-		return my_write_context(file, buf, size);
-	return sel_write_context(file, buf, size);
-}
-#endif // #ifdef CONFIG_KSU_SUSFS
 
 static ssize_t sel_read_checkreqprot(struct file *filp, char __user *buf,
 				     size_t count, loff_t *ppos)
@@ -831,29 +850,18 @@ static const struct file_operations sel_transition_ops = {
  * Remaining nodes use transaction based IO methods like nfsd/nfsctl.c
  */
 static ssize_t sel_write_access(struct file *file, char *buf, size_t size);
-#ifdef CONFIG_KSU_SUSFS
-static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size);
-#endif // #ifdef CONFIG_KSU_SUSFS
 static ssize_t sel_write_create(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_relabel(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
 
 static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
-#ifdef CONFIG_KSU_SUSFS
-	[SEL_ACCESS] = handle_sel_write_access,
-#else
 	[SEL_ACCESS] = sel_write_access,
-#endif // #ifdef CONFIG_KSU_SUSFS
 	[SEL_CREATE] = sel_write_create,
 	[SEL_RELABEL] = sel_write_relabel,
 	[SEL_USER] = sel_write_user,
 	[SEL_MEMBER] = sel_write_member,
-#ifdef CONFIG_KSU_SUSFS
-	[SEL_CONTEXT] = handle_sel_write_context,
-#else
 	[SEL_CONTEXT] = sel_write_context,
-#endif // #ifdef CONFIG_KSU_SUSFS
 };
 
 static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
@@ -897,6 +905,9 @@ static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
 	u16 tclass;
 	struct av_decision avd;
 	ssize_t length;
+#ifdef CONFIG_KSU_SUSFS
+	bool should_check_current = (likely(current_uid().val >= 10000 && ksu_selinux_hide_running));
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	length = avc_has_perm(current_sid(), SECINITSID_SECURITY,
 			      SECCLASS_SECURITY, SECURITY__COMPUTE_AV, NULL);
@@ -917,16 +928,46 @@ static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
 	if (sscanf(buf, "%s %s %hu", scon, tcon, &tclass) != 3)
 		goto out;
 
+#ifdef CONFIG_KSU_SUSFS
+	if (should_check_current) {
+		length = my_security_context_str_to_sid(backup_sepolicy, scon, &ssid, GFP_KERNEL);
+		if (length)
+			goto out;
+		goto bypass_orig_flow1;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 	length = security_context_str_to_sid(scon, &ssid, GFP_KERNEL);
 	if (length)
 		goto out;
+
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow1:
+	if (should_check_current) {
+		length = my_security_context_str_to_sid(backup_sepolicy, tcon, &tsid, GFP_KERNEL);
+		if (length)
+			goto out;
+		goto bypass_orig_flow2;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	length = security_context_str_to_sid(tcon, &tsid, GFP_KERNEL);
 	if (length)
 		goto out;
 
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow2:
+	if (should_check_current) {
+		my_security_compute_av_user(backup_sepolicy, ssid, tsid, tclass, &avd);
+		goto bypass_orig_flow3;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 	security_compute_av_user(ssid, tsid, tclass, &avd);
 
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow3:
+#endif // #ifdef CONFIG_KSU_SUSFS
 	length = scnprintf(buf, SIMPLE_TRANSACTION_LIMIT,
 			  "%x %x %x %x %u %x",
 			  avd.allowed, 0xffffffff,
@@ -937,16 +978,6 @@ out:
 	kfree(scon);
 	return length;
 }
-
-
-#ifdef CONFIG_KSU_SUSFS
-static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size)
-{
-	if ((likely(current_uid().val >= 10000 && ksu_selinux_hide_running)))
-		return my_write_access(file, buf, size);
-	return sel_write_access(file, buf, size);
-}
-#endif // #ifdef CONFIG_KSU_SUSFS
 
 static ssize_t sel_write_create(struct file *file, char *buf, size_t size)
 {

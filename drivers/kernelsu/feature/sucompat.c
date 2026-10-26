@@ -29,7 +29,6 @@
 #include "supercall/supercall.h"
 #include "sulog/event.h"
 #include "uapi/sulog.h"
-#include "util.h"
 
 #define SU_PATH "/system/bin/su"
 #define SH_PATH "/system/bin/sh"
@@ -67,6 +66,15 @@ static const struct ksu_feature_handler su_compat_handler = {
     .set_handler = su_compat_feature_set,
 };
 
+static void __user *userspace_stack_buffer(const void *d, size_t len)
+{
+    // To avoid having to mmap a page in userspace, just write below the stack
+    // pointer.
+    char __user *p = (void __user *)current_user_stack_pointer() - len;
+
+    return copy_to_user(p, d, len) ? NULL : p;
+}
+
 static char __user *sh_user_path(void)
 {
     static const char sh_path[] = "/system/bin/sh";
@@ -79,6 +87,27 @@ static char __user *ksud_user_path(void)
     static const char ksud_path[] = KSUD_PATH;
 
     return userspace_stack_buffer(ksud_path, sizeof(ksud_path));
+}
+
+static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
+{
+    const char __user *native;
+
+#ifdef CONFIG_COMPAT
+    if (unlikely(argv.is_compat)) {
+        compat_uptr_t compat;
+
+        if (get_user(compat, argv.ptr.compat + nr))
+            return ERR_PTR(-EFAULT);
+
+        return compat_ptr(compat);
+    }
+#endif
+
+    if (get_user(native, argv.ptr.native + nr))
+        return ERR_PTR(-EFAULT);
+
+    return native;
 }
 
 /*
@@ -140,7 +169,7 @@ int ksu_handle_execveat_init(struct filename *filename, struct user_arg_ptr *arg
 // the call from execve_handler_pre won't provided correct value for __never_use_argument, use them after fix execve_handler_pre, keeping them for consistence for manually patched code
 int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
                  void *argv_user, void *envp_user,
-                 int *flags)
+                 int *__never_use_flags)
 {
     struct filename *filename;
     struct ksu_sulog_pending_event *pending_sucompat = NULL;
@@ -192,7 +221,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
 
 int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr,
                  void *argv_user, void *envp_user,
-                 int *flags, int *retval)
+                 int *__never_use_flags, int *retval)
 {
     if (*retval >= 0) {
         (void)ksu_install_su_fd();

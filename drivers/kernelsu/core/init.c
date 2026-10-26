@@ -25,7 +25,6 @@
 #include "feature/selinux_hide.h"
 #include "feature/module_blacklist.h"
 #include "feature/shell_su_adb_only.h"
-#include "preinit/preinit.h"
 #include "hook/setuid_hook.h"
 #include "feature/sucompat.h"
 
@@ -128,8 +127,6 @@ int __init kernelsu_init(void)
 
     ksu_ksud_init();
 
-    ksu_preinit_init();
-
     ksu_file_wrapper_init();
 
     return 0;
@@ -140,8 +137,6 @@ void __exit kernelsu_exit(void)
     ksu_supercalls_exit();
 
     ksu_ksud_exit();
-
-    ksu_preinit_exit();
 
     // Wait for any in-flight RCU readers (e.g. handler traversing allow_list)
     synchronize_rcu();
