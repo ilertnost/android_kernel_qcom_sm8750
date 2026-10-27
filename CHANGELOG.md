@@ -3,6 +3,59 @@
 Newest first. Each entry states what was verified and, where relevant, what was
 not.
 
+## v1.4 (6.6.144)
+
+- **Two builds, one installer.** The UFS driver has to match the firmware that
+  is installed, so v1.4 ships `newbase` (for newer firmware on kernel 6.6.118)
+  and `oldbase` (for older firmware on kernel 6.6.77) in a single zip. The
+  build is chosen with the volume keys at flash time; with no key within 15 s
+  the installer reads the kernel version out of the boot image it is about to
+  patch. Keys are read straight from `/dev/input/event*`, so it works in TWRP
+  without `getevent`/`evtest`. `CONFIG_LOCALVERSION` carries the choice into
+  `uname -r`: `6.6.144-4k-APEX-Foundry-v1.4-newbase` / `...-v1.4-oldbase`.
+- **Why two builds.** On 6.6.77 firmware the UFS stack comes from the stock
+  `vendor_boot`: `ufs_qcom.ko` built for 6.6.30, with its own UFS core inside.
+  Our `ufshcd_init()` never runs there, so the `dev_cmd` completion that
+  `f77653a6` moved into `ufs_hba_priv` is uninitialized memory inside a
+  structure the vendor module lays out itself; any trip through the
+  device-command path ends in a silent PS_HOLD hard reset (cold boot, no panic,
+  no last line in the log). `oldbase` reverts `f77653a6` back to the stock
+  completion-on-the-stack plus `if (hba->dev_cmd.complete)`. On 6.6.118 that
+  revert brings back the use-after-free the commit fixed, so `newbase` keeps
+  the commit and the two branches differ by that one revert.
+- **Stale `dev_cmd` completions no longer pair commands with wrong responses.**
+  The shared completion can stay armed when a waiter times out before the IRQ
+  handler calls `complete()`; the next command then consumes the stale signal
+  instantly and reads a response that belongs to the previous command. Under
+  bursts of device commands (USB/MTP connect, adb, RPMB on every FBE unlock)
+  this wedged the dev-command queue until the error handler reset the host.
+  `reinit_completion()` now runs right before each of the three submission
+  sites (query/NOP, raw UPIU for bsg/FFU, advanced RPMB). No struct layouts
+  change, so the vendor modules of both firmware generations still load.
+- **The DRM valid-clones check disables itself instead of flickering.** The
+  6.6.77-era vendor display stack submits encoder configurations that the
+  upstream check rejects, and the failed commits showed up as a screen-flicker
+  storm; removing the check outright fixes those stacks but wedges the
+  6.6.118-era stack at panel-off. v1.4 keeps the upstream check and lets it
+  disable itself for the rest of the boot the first time it rejects a commit.
+  The rejection is logged with `DRM_WARN`.
+- **clang 23.0.1 without breaking vendor module loading.** clang >= 18 emits
+  `__counted_by()` on flexible array members and genksyms hashes attributes as
+  part of the symbol type; with 23.0.1 that changed the CRC of 14 GPL symbols
+  imported by the prebuilt vendor modules (`icc_*`, `of_icc_get*`,
+  `io_uring_cmd_*`). The attribute has no ABI effect, so it is hidden from the
+  genksyms pass only - the real compile still gets it.
+- **NTFS3, UDF, ISO9660+Joliet, and the missing USB-serial bridges.** The stock
+  OTG config only covered exFAT/VFAT. NTFS3 (with LZX/XPRESS), UDF and
+  ISO9660+Joliet make USB-C sticks, external SSDs, optical images and
+  dock/car head-unit media mount read-only out of the box; CH341, CP210x and
+  PL2303 are enabled as modules next to the already-built-in `USB_SERIAL`.
+- Still 6.6.144, still KASAN compiled in and off via `kasan=off`, still
+  ThinLTO, still BORE, still the full optimization patch set.
+
+Both builds were flashed from TWRP through the dual installer and boot on
+device; checksums are in `RELEASE_v1.4.md`.
+
 ## v1.3 (6.6.144)
 
 - **f2fs VIP search rewritten - it could hang the kernel.** `f2fs_vip_bsearch()`
