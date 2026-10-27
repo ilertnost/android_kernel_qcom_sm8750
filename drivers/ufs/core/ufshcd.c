@@ -3229,6 +3229,14 @@ static int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
 		goto out;
 
 	ufshcd_add_query_upiu_trace(hba, UFS_QUERY_SEND, lrbp->ucd_req_ptr);
+	/*
+	 * The device-command completion lives in ufs_hba_priv and is shared
+	 * between consecutive commands. complete() left behind by a command
+	 * that timed out earlier stays armed, so this wait could consume a
+	 * stale signal and return before this command has completed. Drop
+	 * any leftover state right before submitting.
+	 */
+	reinit_completion(&to_hba_priv(hba)->dev_cmd_compl);
 	ufshcd_send_command(hba, tag, hba->dev_cmd_queue);
 	err = ufshcd_wait_for_dev_cmd(hba, lrbp, timeout);
 	ufshcd_add_query_upiu_trace(hba, err ? UFS_QUERY_ERR : UFS_QUERY_COMP,
@@ -7269,6 +7277,7 @@ static int ufshcd_issue_devman_upiu_cmd(struct ufs_hba *hba,
 	memset(lrbp->ucd_rsp_ptr, 0, sizeof(struct utp_upiu_rsp));
 
 	ufshcd_add_query_upiu_trace(hba, UFS_QUERY_SEND, lrbp->ucd_req_ptr);
+	reinit_completion(&to_hba_priv(hba)->dev_cmd_compl);
 	ufshcd_send_command(hba, tag, hba->dev_cmd_queue);
 	/*
 	 * ignore the returning value here - ufshcd_check_query_response is
@@ -7441,6 +7450,7 @@ int ufshcd_advanced_rpmb_req_handler(struct ufs_hba *hba, struct utp_upiu_req *r
 
 	memset(lrbp->ucd_rsp_ptr, 0, sizeof(struct utp_upiu_rsp));
 
+	reinit_completion(&to_hba_priv(hba)->dev_cmd_compl);
 	ufshcd_send_command(hba, tag, hba->dev_cmd_queue);
 
 	err = ufshcd_wait_for_dev_cmd(hba, lrbp, ADVANCED_RPMB_REQ_TIMEOUT);
