@@ -3131,10 +3131,16 @@ static int ufshcd_wait_for_dev_cmd(struct ufs_hba *hba,
 	int err;
 
 retry:
-	time_left = wait_for_completion_timeout(&to_hba_priv(hba)->dev_cmd_compl,
+	time_left = wait_for_completion_timeout(hba->dev_cmd.complete,
 						time_left);
 
 	if (likely(time_left)) {
+		/*
+		 * The completion handler called complete() and the caller of
+		 * this function still owns the @lrbp tag so the code below does
+		 * not trigger any race conditions.
+		 */
+		hba->dev_cmd.complete = NULL;
 		err = ufshcd_get_tr_ocs(lrbp, NULL);
 		if (!err)
 			err = ufshcd_dev_cmd_completion(hba, lrbp);
@@ -3148,6 +3154,7 @@ retry:
 			/* successfully cleared the command, retry if needed */
 			if (ufshcd_clear_cmd(hba, lrbp->task_tag) == 0)
 				err = -EAGAIN;
+			hba->dev_cmd.complete = NULL;
 			return err;
 		}
 
@@ -3163,9 +3170,11 @@ retry:
 			spin_lock_irqsave(&hba->outstanding_lock, flags);
 			pending = test_bit(lrbp->task_tag,
 					   &hba->outstanding_reqs);
-			if (pending)
+			if (pending) {
+				hba->dev_cmd.complete = NULL;
 				__clear_bit(lrbp->task_tag,
 					    &hba->outstanding_reqs);
+			}
 			spin_unlock_irqrestore(&hba->outstanding_lock, flags);
 
 			if (!pending) {
@@ -3183,6 +3192,8 @@ retry:
 			spin_lock_irqsave(&hba->outstanding_lock, flags);
 			pending = test_bit(lrbp->task_tag,
 					   &hba->outstanding_reqs);
+			if (pending)
+				hba->dev_cmd.complete = NULL;
 			spin_unlock_irqrestore(&hba->outstanding_lock, flags);
 
 			if (!pending) {
@@ -3213,6 +3224,7 @@ retry:
 static int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
 		enum dev_cmd_type cmd_type, int timeout)
 {
+	DECLARE_COMPLETION_ONSTACK(wait);
 	const u32 tag = hba->reserved_slot;
 	struct ufshcd_lrb *lrbp;
 	int err;
@@ -3228,15 +3240,9 @@ static int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
 	if (unlikely(err))
 		goto out;
 
+	hba->dev_cmd.complete = &wait;
+
 	ufshcd_add_query_upiu_trace(hba, UFS_QUERY_SEND, lrbp->ucd_req_ptr);
-	/*
-	 * The device-command completion lives in ufs_hba_priv and is shared
-	 * between consecutive commands. complete() left behind by a command
-	 * that timed out earlier stays armed, so this wait could consume a
-	 * stale signal and return before this command has completed. Drop
-	 * any leftover state right before submitting.
-	 */
-	reinit_completion(&to_hba_priv(hba)->dev_cmd_compl);
 	ufshcd_send_command(hba, tag, hba->dev_cmd_queue);
 	err = ufshcd_wait_for_dev_cmd(hba, lrbp, timeout);
 	ufshcd_add_query_upiu_trace(hba, err ? UFS_QUERY_ERR : UFS_QUERY_COMP,
@@ -5546,12 +5552,14 @@ void ufshcd_compl_one_cqe(struct ufs_hba *hba, int task_tag,
 		scsi_done(cmd);
 	} else if (lrbp->command_type == UTP_CMD_TYPE_DEV_MANAGE ||
 		   lrbp->command_type == UTP_CMD_TYPE_UFS_STORAGE) {
-		trace_android_vh_ufs_compl_command(hba, lrbp);
-		if (cqe) {
-			ocs = le32_to_cpu(cqe->status) & MASK_OCS;
-			lrbp->utr_descriptor_ptr->header.ocs = ocs;
+		if (hba->dev_cmd.complete) {
+			trace_android_vh_ufs_compl_command(hba, lrbp);
+			if (cqe) {
+				ocs = le32_to_cpu(cqe->status) & MASK_OCS;
+				lrbp->utr_descriptor_ptr->header.ocs = ocs;
+			}
+			complete(hba->dev_cmd.complete);
 		}
-		complete(&to_hba_priv(hba)->dev_cmd_compl);
 	}
 }
 
@@ -7235,6 +7243,7 @@ static int ufshcd_issue_devman_upiu_cmd(struct ufs_hba *hba,
 					enum dev_cmd_type cmd_type,
 					enum query_opcode desc_op)
 {
+	DECLARE_COMPLETION_ONSTACK(wait);
 	const u32 tag = hba->reserved_slot;
 	struct ufshcd_lrb *lrbp;
 	int err = 0;
@@ -7276,8 +7285,10 @@ static int ufshcd_issue_devman_upiu_cmd(struct ufs_hba *hba,
 
 	memset(lrbp->ucd_rsp_ptr, 0, sizeof(struct utp_upiu_rsp));
 
+	hba->dev_cmd.complete = &wait;
+
 	ufshcd_add_query_upiu_trace(hba, UFS_QUERY_SEND, lrbp->ucd_req_ptr);
-	reinit_completion(&to_hba_priv(hba)->dev_cmd_compl);
+
 	ufshcd_send_command(hba, tag, hba->dev_cmd_queue);
 	/*
 	 * ignore the returning value here - ufshcd_check_query_response is
@@ -7402,6 +7413,7 @@ int ufshcd_advanced_rpmb_req_handler(struct ufs_hba *hba, struct utp_upiu_req *r
 			 struct ufs_ehs *rsp_ehs, int sg_cnt, struct scatterlist *sg_list,
 			 enum dma_data_direction dir)
 {
+	DECLARE_COMPLETION_ONSTACK(wait);
 	const u32 tag = hba->reserved_slot;
 	struct ufshcd_lrb *lrbp;
 	int err = 0;
@@ -7450,7 +7462,8 @@ int ufshcd_advanced_rpmb_req_handler(struct ufs_hba *hba, struct utp_upiu_req *r
 
 	memset(lrbp->ucd_rsp_ptr, 0, sizeof(struct utp_upiu_rsp));
 
-	reinit_completion(&to_hba_priv(hba)->dev_cmd_compl);
+	hba->dev_cmd.complete = &wait;
+
 	ufshcd_send_command(hba, tag, hba->dev_cmd_queue);
 
 	err = ufshcd_wait_for_dev_cmd(hba, lrbp, ADVANCED_RPMB_REQ_TIMEOUT);
@@ -10551,8 +10564,6 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	hba->mmio_base = mmio_base;
 	hba->irq = irq;
 	hba->vps = &ufs_hba_vps;
-
-	init_completion(&to_hba_priv(hba)->dev_cmd_compl);
 
 	err = ufshcd_hba_init(hba);
 	if (err)
