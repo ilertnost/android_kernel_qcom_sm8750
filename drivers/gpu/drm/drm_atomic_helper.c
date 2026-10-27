@@ -573,6 +573,16 @@ mode_valid(struct drm_atomic_state *state)
 	return 0;
 }
 
+/*
+ * The 6.6.77-era vendor display stack submits encoder configurations that
+ * the valid-clones check rejects. Removing the check outright wedges the
+ * 6.6.118-era stack at panel-off, so instead it self-disables for the rest
+ * of the boot on its first rejection: stacks that expect the check never
+ * trip it, stacks that predate it lose it after one failed commit and run
+ * exactly like the pre-check kernels. No per-ROM configuration.
+ */
+static bool apex_valid_clones_relaxed;
+
 static int drm_atomic_check_valid_clones(struct drm_atomic_state *state,
 					 struct drm_crtc *crtc)
 {
@@ -769,9 +779,15 @@ drm_atomic_helper_check_modeset(struct drm_device *dev,
 		if (ret != 0)
 			return ret;
 
-		ret = drm_atomic_check_valid_clones(state, crtc);
-		if (ret != 0)
-			return ret;
+		if (!READ_ONCE(apex_valid_clones_relaxed)) {
+			ret = drm_atomic_check_valid_clones(state, crtc);
+			if (ret != 0) {
+				WRITE_ONCE(apex_valid_clones_relaxed, true);
+				DRM_WARN("apex: valid-clones check rejected crtc%d, relaxing for this boot\n",
+					 crtc->base.id);
+				ret = 0;
+			}
+		}
 	}
 
 	/*
