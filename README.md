@@ -6,7 +6,7 @@ Builds on the LineageOS `android_kernel_qcom_sm8750` tree at **6.6.144**
 (ASB-2026-10-05, GKI branch `android15-6.6`) and runs the device's
 **stock vendor modules unmodified**.
 
-Flavour: `v1.3` — upstream KernelSU main, SUSFS, BORE, memfd ashmem shim, ADIOS, NTsync, ThinLTO
+Flavour: `v1.4` — two builds in one installer (`newbase` for newer firmware on 6.6.118, `oldbase` for older firmware on 6.6.77), upstream KernelSU main, SUSFS, BORE, memfd ashmem shim, ADIOS, NTsync, ThinLTO
 
 ---
 
@@ -271,6 +271,7 @@ Three maturity stages, named for what changes between them:
 | `v1.1` | Adds BORE, the memfd ashmem shim, SukiSU Ultra main. See `CHANGELOG.md`. |
 | `v1.2` | Narrows the EROFS LZ4 inplace margin to `>> 6`, and replaces SukiSU Ultra with upstream KernelSU main, SUSFS still in-tree. See `CHANGELOG.md`. |
 | `v1.3` | Turns ThinLTO back on, with the measurement v1.1 never had; BBRv3 was tried and rejected on device evidence. See `CHANGELOG.md`. |
+| `v1.4` | Splits into two builds for the two firmware lines - `newbase` (6.6.118) and `oldbase` (6.6.77) - shipped in one installer; adds NTFS3/UDF/ISO9660 and the missing USB-serial bridges. See `CHANGELOG.md`. |
 
 ## Known cosmetic issue
 
@@ -295,14 +296,16 @@ different things:
   the community build workflows are written against 23.0-23.2, and Android 16
   is what has been verified on device.
 
-Kernel version string stays `APEX-Foundry-v1.3`; the two numbering schemes are
-independent and never mixed.
+Kernel version string carries the release and the build:
+`6.6.144-4k-APEX-Foundry-v1.4-newbase` or `...-v1.4-oldbase`. The two numbering
+schemes are independent and never mixed.
 
 ## Layout
 
 | Branch | Contents |
 |---|---|
-| `lineage-23.2` | Current. KMI fix, optimizations, Droidspaces, upstream KernelSU, SUSFS. |
+| `lineage-23.2` | Current. KMI fix, optimizations, Droidspaces, upstream KernelSU, SUSFS. The `newbase` build. |
+| `lineage-23.2-oldbase` | The same tree with `f77653a6` reverted on top - the `oldbase` build for 6.6.77 firmware. |
 | `apex-foundry-v0.1-prot` | The working base, before optional features. |
 | `android15-6.6-dada` | Full upstream GKI history, kept for reference. |
 
@@ -312,9 +315,10 @@ Verified on device: audio, Bluetooth, WLAN, charging and Droidspaces all work.
 v1.2 is reported working on device by the maintainer, with the EROFS oracle
 (`md5sum /system/lib64/libminikin.so` = `3b3f0ed6...`) holding.
 
-v1.3 has not been released yet. Its ThinLTO build boots on device; no runtime
-gain is claimed for ThinLTO, and BBRv3 was tried and removed - see
-`CHANGELOG.md`.
+v1.4 is released with both builds. The dual installer was flashed from TWRP on
+both firmware lines, `newbase` (6.6.118) and `oldbase` (6.6.77), and the device
+boots on each. No runtime gain is claimed for ThinLTO, and BBRv3 was tried and
+removed - see `CHANGELOG.md`.
 
 ## Acknowledgements
 
