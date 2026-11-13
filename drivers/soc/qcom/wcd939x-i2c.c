@@ -12,6 +12,7 @@
 #include <linux/kobject.h>
 #include <linux/pm_runtime.h>
 #include <linux/nvmem-consumer.h>
+#include <linux/hwid.h>
 #include "wcd-usbss-priv.h"
 #include "wcd-usbss-reg-masks.h"
 #include "wcd-usbss-reg-shifts.h"
@@ -1723,6 +1724,26 @@ exit:
 	return rc;
 }
 
+/*
+ * Xiaomi uses one device tree for all regional variants of a board, but only
+ * the Global and India ones carry the external SBU zener diodes that allow
+ * dropping the SBU pull-downs.
+ */
+static bool wcd_usbss_sbu_compliance_supported(struct device *dev)
+{
+	u32 region;
+
+	if (!of_property_read_bool(dev->of_node, "wcd-usb-sbu-compliance"))
+		return false;
+
+	region = get_hw_country_version();
+	dev_dbg(dev, "project %u, region %u\n", get_hw_version_platform(),
+		region);
+
+	return get_hw_version_platform() == HARDWARE_PROJECT_O3 &&
+	       (region == CountryGlobal || region == CountryIndia);
+}
+
 static int wcd_usbss_probe(struct i2c_client *i2c)
 {
 	struct wcd_usbss_ctxt *priv;
@@ -1793,7 +1814,7 @@ static int wcd_usbss_probe(struct i2c_client *i2c)
 		dev_err(priv->dev, "Failed to initialize regmap: %d\n", rc);
 		goto err_data;
 	}
-	if (of_find_property(i2c->dev.of_node, "wcd-usb-sbu-compliance", NULL)) {
+	if (wcd_usbss_sbu_compliance_supported(&i2c->dev)) {
 		dev_dbg(priv->dev, "disabling SBU pulldowns for USB compliance\n");
 		priv->usb_sbu_compliance = true;
 		/*

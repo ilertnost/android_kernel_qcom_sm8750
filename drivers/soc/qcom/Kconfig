@@ -1206,6 +1206,7 @@ config QCOM_WCD_USBSS_I2C
 	tristate "WCD USBSS chip with I2C"
 	select REGMAP
 	depends on I2C
+	depends on MI_HARDWARE_ID || !MI_HARDWARE_ID
 	help
 	 Support for the WCD939X USBSS IC switch chip controlled
 	 using I2C. This driver provides common support
