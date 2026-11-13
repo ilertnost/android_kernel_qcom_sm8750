@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config XM_POWER_SUPPLY
+	tristate "Xiaomi MCA charging stack"
+	depends on QTI_PMIC_GLINK
+	depends on QCOM_SMEM
+	depends on QCOM_PANEL_EVENT_NOTIFIER
+	depends on MI_HARDWARE_ID
+	depends on QTI_BATTERY_CHARGER=n
+	help
+	  Xiaomi's Mi Charging Architecture (MCA), the charging stack of
+	  Xiaomi phones whose battery charger runs on the ADSP: platform
+	  class drivers, charging strategies, the battery and charger power
+	  supplies, and the drivers for the BQ27Z561 fuel gauge, the SC8581
+	  charge pump and the NU1652 wireless receiver.
+
+	  The stack replaces the QTI battery charger client on the same PMIC
+	  Glink channel and exports the battery charger interface in its
+	  place, so the two cannot be enabled together.
+
+	  All parts are built as separate modules, named as on the stock
+	  firmware.
