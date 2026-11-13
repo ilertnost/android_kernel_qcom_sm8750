@@ -784,7 +784,9 @@ static int cs_dsp_coeff_write_ctrl_raw(struct cs_dsp_coeff_ctl *ctl,
  *
  * Must be called with pwr_lock held.
  *
- * Return: < 0 on error, 1 when the control value changed and 0 when it has not.
+ * The value is written to the DSP even when it matches the cached one.
+ *
+ * Return: < 0 on error, 0 on success.
  */
 int cs_dsp_coeff_write_ctrl(struct cs_dsp_coeff_ctl *ctl,
 			    unsigned int off, const void *buf, size_t len)
@@ -802,23 +804,16 @@ int cs_dsp_coeff_write_ctrl(struct cs_dsp_coeff_ctl *ctl,
 	if (len + off * sizeof(u32) > ctl->len)
 		return -EINVAL;
 
-	if (ctl->flags & WMFW_CTL_FLAG_VOLATILE) {
+	if (ctl->flags & WMFW_CTL_FLAG_VOLATILE)
 		ret = -EPERM;
-	} else if (buf != ctl->cache) {
-		if (memcmp(ctl->cache + off * sizeof(u32), buf, len))
-			memcpy(ctl->cache + off * sizeof(u32), buf, len);
-		else
-			return 0;
-	}
+	else if (buf != ctl->cache)
+		memcpy(ctl->cache + off * sizeof(u32), buf, len);
 
 	ctl->set = 1;
 	if (ctl->enabled && ctl->dsp->running)
 		ret = cs_dsp_coeff_write_ctrl_raw(ctl, off, buf, len);
 
-	if (ret < 0)
-		return ret;
-
-	return 1;
+	return ret;
 }
 EXPORT_SYMBOL_NS_GPL(cs_dsp_coeff_write_ctrl, FW_CS_DSP);
 
