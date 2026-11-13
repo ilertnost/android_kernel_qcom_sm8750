@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Xiaomi's Mi Charging Architecture.
+#
+# The layout and file names follow Xiaomi's own release so that a future
+# vendor drop can be diffed against this tree directly.  What is missing
+# compared with that release is the hardware this phone does not have.
+
+subdir-ccflags-y += -I$(srctree)/$(src)/include
+
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_common/

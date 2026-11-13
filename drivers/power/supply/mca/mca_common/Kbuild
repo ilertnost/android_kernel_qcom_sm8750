@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0
+
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_common.o
+mca_common-objs			:= mca_voter.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_sysfs.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_event.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_parse_dts.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_charge_interface.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_log.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_hwid.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_charge_mievent.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_workqueue.o
+# Qualcomm's equivalents of the parts Xiaomi's release has for Xring.
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_qcom_panel.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_qcom_smem.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_adsp_glink.o
