@@ -36,6 +36,15 @@
 #define SMEM_GLINK_NATIVE_XPRT_FIFO_0		479
 #define SMEM_GLINK_NATIVE_XPRT_FIFO_1		480
 
+/*
+ * Read back a FIFO index after updating it, so the write has reached the
+ * shared memory before the remote is signalled.
+ */
+static inline void glink_smem_read_back(__le32 *addr)
+{
+	(void)READ_ONCE(*addr);
+}
+
 struct qcom_glink_smem {
 	struct device dev;
 
@@ -156,6 +165,7 @@ static void glink_smem_rx_advance(struct qcom_glink_pipe *np,
 		tail %= pipe->native.length;
 
 	*pipe->tail = cpu_to_le32(tail);
+	glink_smem_read_back(pipe->tail);
 }
 
 static size_t glink_smem_tx_avail(struct qcom_glink_pipe *np)
@@ -231,6 +241,7 @@ static void glink_smem_tx_write(struct qcom_glink_pipe *glink_pipe,
 	GLINK_SMEM_INFO("TX: remote-pid=%d, head=0x%x, tail=0x%x\n",
 			 smem->remote_pid, head, le32_to_cpu(*pipe->tail));
 	*pipe->head = cpu_to_le32(head);
+	glink_smem_read_back(pipe->head);
 }
 
 static void glink_smem_tx_kick(struct qcom_glink_pipe *glink_pipe)
