@@ -4,6 +4,7 @@ mitee_dlkm-y := \
 	mitee_core.o \
 	mitee_memlog.o \
 	mitee_msgq.o \
+	mitee_notify.o \
 	mitee_task.o \
 	optee_call.o \
 	optee_rpc.o \
