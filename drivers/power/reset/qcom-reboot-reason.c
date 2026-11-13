@@ -15,11 +15,13 @@
 #include <linux/pm.h>
 #include <linux/of_address.h>
 #include <linux/nvmem-consumer.h>
+#include <linux/panic_notifier.h>
 #include <linux/input/qpnp-power-on.h>
 
 struct qcom_reboot_reason {
 	struct device *dev;
 	struct notifier_block reboot_nb;
+	struct notifier_block panic_nb;
 	struct nvmem_cell *nvmem_cell;
 };
 
@@ -35,8 +37,26 @@ static struct poweroff_reason reasons[] = {
 	{ "dm-verity device corrupted",	0x04 },
 	{ "dm-verity enforcing",	0x05 },
 	{ "keys clear",			0x06 },
+	{ "panic",			0x21 },
 	{}
 };
+
+#define DM_VERITY_CORRUPTED_CMD		"dm-verity device corrupted"
+
+/* Reasons the bootloader expects for a plain reboot and after a panic */
+#define PON_REASON_DM_VERITY_CORRUPTED	0x04
+#define PON_REASON_NORMAL		0x20
+#define PON_REASON_PANIC		0x21
+
+static void qcom_reboot_reason_write(struct qcom_reboot_reason *reboot,
+				     unsigned char pon_reason)
+{
+	if (reboot->nvmem_cell)
+		nvmem_cell_write(reboot->nvmem_cell, &pon_reason,
+				 sizeof(pon_reason));
+	else
+		qpnp_pon_set_restart_reason((enum pon_restart_reason)pon_reason);
+}
 
 static int qcom_reboot_reason_reboot(struct notifier_block *this,
 				     unsigned long event, void *ptr)
@@ -47,21 +67,44 @@ static int qcom_reboot_reason_reboot(struct notifier_block *this,
 	struct poweroff_reason *reason;
 
 	if (!cmd)
-		return NOTIFY_OK;
+		goto normal;
+
 	for (reason = reasons; reason->cmd; reason++) {
-		if (!strcmp(cmd, reason->cmd)) {
-			if (reboot->nvmem_cell)
-				nvmem_cell_write(reboot->nvmem_cell,
-						 &reason->pon_reason,
-						 sizeof(reason->pon_reason));
-			else
-				qpnp_pon_set_restart_reason(
-						(enum pon_restart_reason)reason->pon_reason);
-			break;
+		if (strcmp(cmd, reason->cmd))
+			continue;
+
+		/*
+		 * Panic on dm-verity corruption so the failure is logged; the
+		 * panic notifier then records the reason for the bootloader.
+		 */
+		if (!strcmp(cmd, DM_VERITY_CORRUPTED_CMD)) {
+			pr_err("!!! trigger dm-verity panic !!!");
+			panic(cmd);
 		}
+
+		qcom_reboot_reason_write(reboot, reason->pon_reason);
+		return NOTIFY_OK;
 	}
 
+normal:
+	qcom_reboot_reason_write(reboot, PON_REASON_NORMAL);
+
 	return NOTIFY_OK;
+}
+
+static int qcom_reboot_reason_panic(struct notifier_block *this,
+				    unsigned long event, void *ptr)
+{
+	struct qcom_reboot_reason *reboot = container_of(this,
+		struct qcom_reboot_reason, panic_nb);
+	const char *msg = ptr;
+
+	if (!strcmp(msg, DM_VERITY_CORRUPTED_CMD))
+		qcom_reboot_reason_write(reboot, PON_REASON_DM_VERITY_CORRUPTED);
+	else
+		qcom_reboot_reason_write(reboot, PON_REASON_PANIC);
+
+	return NOTIFY_DONE;
 }
 
 static int qcom_reboot_reason_probe(struct platform_device *pdev)
@@ -88,6 +131,10 @@ static int qcom_reboot_reason_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, reboot);
 
+	reboot->panic_nb.notifier_call = qcom_reboot_reason_panic;
+	reboot->panic_nb.priority = INT_MAX;
+	atomic_notifier_chain_register(&panic_notifier_list, &reboot->panic_nb);
+
 	return 0;
 }
 
@@ -95,6 +142,7 @@ static int qcom_reboot_reason_remove(struct platform_device *pdev)
 {
 	struct qcom_reboot_reason *reboot = platform_get_drvdata(pdev);
 
+	atomic_notifier_chain_unregister(&panic_notifier_list, &reboot->panic_nb);
 	unregister_reboot_notifier(&reboot->reboot_nb);
 
 	return 0;
