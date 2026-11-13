@@ -33,7 +33,10 @@
 #include <linux/kdebug.h>
 #include <asm/hardirq.h>
 #include <linux/suspend.h>
+#include <linux/nmi.h>
 #include <linux/notifier.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/signal.h>
 
 #define MASK_SIZE        32
 
@@ -688,6 +691,28 @@ void qcom_wdt_trigger_bite(void)
 }
 EXPORT_SYMBOL(qcom_wdt_trigger_bite);
 
+static bool console_no_auto_verbose;
+module_param(console_no_auto_verbose, bool, 0644);
+MODULE_PARM_DESC(console_no_auto_verbose,
+		 "Do not raise the console log level on watchdog bark");
+
+/* Log the tasks stuck in D state, the usual suspects of a lockup */
+static void qcom_wdt_show_blocked_tasks(void)
+{
+	struct task_struct *g, *p;
+
+	if (console_loglevel && !console_no_auto_verbose)
+		console_loglevel = CONSOLE_LOGLEVEL_MOTORMOUTH;
+
+	rcu_read_lock();
+	for_each_process_thread(g, p) {
+		touch_nmi_watchdog();
+		if (READ_ONCE(p->__state) == TASK_UNINTERRUPTIBLE)
+			sched_show_task(p);
+	}
+	rcu_read_unlock();
+}
+
 static irqreturn_t qcom_wdt_bark_handler(int irq, void *dev_id)
 {
 	struct msm_watchdog_data *wdog_dd = dev_id;
@@ -702,6 +727,7 @@ static irqreturn_t qcom_wdt_bark_handler(int irq, void *dev_id)
 	nanosec_rem = do_div(tp, 1000000000);
 	dev_info(wdog_dd->dev, "QCOM Apps Watchdog last pet at %lu.%06lu\n",
 			(unsigned long) tp, nanosec_rem / 1000);
+	qcom_wdt_show_blocked_tasks();
 	if (wdog_dd->do_ipi_ping)
 		qcom_wdt_dump_cpu_alive_mask(wdog_dd);
 
