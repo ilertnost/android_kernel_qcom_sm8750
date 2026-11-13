@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
+
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_basic_wireless.o
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_quick_wireless.o
