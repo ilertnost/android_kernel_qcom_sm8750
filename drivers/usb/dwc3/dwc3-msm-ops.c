@@ -9,6 +9,7 @@
 #include <linux/kprobes.h>
 #include <linux/irq.h>
 #include <linux/irqdesc.h>
+#include <linux/pm_runtime.h>
 #include <linux/sched.h>
 #include <scsi/scsi_device.h>
 #include <linux/usb/dwc3-msm.h>
@@ -151,6 +152,31 @@ static int exit_usb_ep_set_maxpacket_limit(struct kretprobe_instance *ri,
 		ep->maxpacket_limit = 1024;
 		ep->maxpacket = 1024;
 	}
+
+	return 0;
+}
+
+static int entry_dwc3_gadget_disconnect_interrupt(struct kretprobe_instance *ri,
+						  struct pt_regs *regs)
+{
+	union kprobe_data *data = (union kprobe_data *)ri->data;
+
+	data->dwc = (struct dwc3 *)regs->regs[0];
+
+	return 0;
+}
+
+static int exit_dwc3_gadget_disconnect_interrupt(struct kretprobe_instance *ri,
+						 struct pt_regs *regs)
+{
+	union kprobe_data *data = (union kprobe_data *)ri->data;
+
+	/*
+	 * The usage count may already have dropped to zero while waiting for
+	 * the disconnect interrupt to clear dwc->connected; request idle so
+	 * the core can suspend now.
+	 */
+	pm_request_idle(data->dwc->dev);
 
 	return 0;
 }
@@ -417,6 +443,7 @@ static struct kretprobe dwc3_msm_probes[] = {
 	ENTRY_EXIT(dwc3_gadget_pullup),
 	ENTRY_EXIT(android_work),
 	ENTRY_EXIT(usb_ep_set_maxpacket_limit),
+	ENTRY_EXIT(dwc3_gadget_disconnect_interrupt),
 	ENTRY_EXIT(dwc3_suspend_common),
 	ENTRY(trace_event_raw_event_dwc3_log_request),
 	ENTRY(trace_event_raw_event_dwc3_log_gadget_ep_cmd),

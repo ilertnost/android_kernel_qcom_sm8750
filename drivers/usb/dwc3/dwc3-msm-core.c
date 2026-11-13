@@ -48,12 +48,15 @@
 #include <linux/usb/composite.h>
 #include <linux/soc/qcom/wcd939x-i2c.h>
 #include <linux/usb/repeater.h>
+#include <linux/i2c.h>
+#include <linux/regmap.h>
 
 #include "core.h"
 #include "gadget.h"
 #include "debug.h"
 #include "xhci.h"
 #include "debug-ipc.h"
+#include "../../soc/qcom/wcd-usbss-registers.h"
 
 #define NUM_LOG_PAGES   12
 
@@ -653,6 +656,11 @@ struct dwc3_msm {
 	bool			has_orientation_gpio;
 
 	bool			wcd_usbss;
+	/* WCD USBSS DP/DM equalizer settings for device and host mode */
+	struct regmap		*wcd_regmap;
+	u32			wcd_equ;
+	u32			wcd_equ_host;
+	bool			host_force_gen1;
 	bool			dynamic_disable;
 
 	struct dentry		*dbg_dir;
@@ -1164,7 +1172,10 @@ static inline bool dwc3_msm_is_superspeed(struct dwc3_msm *mdwc)
 	if (mdwc->in_host_mode)
 		return dwc3_msm_is_host_superspeed(mdwc);
 
-	return dwc3_msm_is_dev_superspeed(mdwc);
+	if (mdwc->in_device_mode)
+		return dwc3_msm_is_dev_superspeed(mdwc);
+
+	return false;
 }
 
 static int dwc3_msm_dbm_disable_updxfer(struct dwc3 *dwc, u8 usb_ep)
@@ -5445,6 +5456,22 @@ static ssize_t dynamic_disable_store(struct device *dev, struct device_attribute
 }
 static DEVICE_ATTR_WO(dynamic_disable);
 
+static ssize_t super_speed_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
+	bool super_speed = false;
+
+	/* The controller registers are only accessible while it is active */
+	if (pm_runtime_get_if_in_use(dev) > 0) {
+		super_speed = dwc3_msm_is_superspeed(mdwc);
+		pm_runtime_put_autosuspend(dev);
+	}
+
+	return sysfs_emit(buf, "%s\n", super_speed ? "true" : "false");
+}
+static DEVICE_ATTR_RO(super_speed);
+
 static struct attribute *dwc3_msm_attrs[] = {
 	&dev_attr_orientation.attr,
 	&dev_attr_mode.attr,
@@ -5452,6 +5479,7 @@ static struct attribute *dwc3_msm_attrs[] = {
 	&dev_attr_bus_vote.attr,
 	&dev_attr_xhci_test.attr,
 	&dev_attr_dynamic_disable.attr,
+	&dev_attr_super_speed.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(dwc3_msm);
@@ -5898,12 +5926,21 @@ static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 {
 	struct device_node *node = mdwc->dev->of_node, *dwc3_node;
 	struct dwc3	*dwc;
+	bool host;
 	int ret = 0;
 
 	if (mdwc->dwc3)
 		return 0;
 
 	mdwc->cap_length = dwc3_msm_read_reg(mdwc->base, 0) & CAPLENGTH_MASK;
+
+	/*
+	 * When booting with a host mode accessory attached, initialize the
+	 * PHYs with their host mode tuning straight away.
+	 */
+	host = dwc3_msm_get_role(mdwc) == USB_ROLE_HOST;
+	if (host)
+		mdwc->hs_phy->flags |= PHY_HOST_MODE;
 
 	ret = usb_phy_init(mdwc->hs_phy);
 	if (ret) {
@@ -5912,6 +5949,8 @@ static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 	}
 
 	if (dwc3_msm_get_max_speed(mdwc) >= USB_SPEED_SUPER) {
+		if (host)
+			mdwc->ss_phy->flags |= PHY_HOST_MODE;
 		ret = usb_phy_init(mdwc->ss_phy);
 		if (ret) {
 			dev_err(mdwc->dev, "failed to init SS PHY\n");
@@ -6211,7 +6250,51 @@ static int dwc3_msm_parse_params(struct dwc3_msm *mdwc, struct device_node *node
 		mdwc->wcd_usbss = true;
 	of_node_put(wcd_node);
 
+	of_property_read_u32(node, "wcd_equ", &mdwc->wcd_equ);
+	of_property_read_u32(node, "wcd_equ_host", &mdwc->wcd_equ_host);
+	mdwc->host_force_gen1 = of_property_read_bool(node, "host-force-gen1");
+
 	return 0;
+}
+
+static struct regmap *dwc3_msm_get_wcd_regmap(struct dwc3_msm *mdwc)
+{
+	struct device_node *wcd_node;
+	struct i2c_client *client;
+
+	if (mdwc->wcd_regmap)
+		return mdwc->wcd_regmap;
+
+	wcd_node = of_parse_phandle(mdwc->dev->of_node, "qcom,wcd_usbss", 0);
+	client = of_find_i2c_device_by_node(wcd_node);
+	of_node_put(wcd_node);
+	if (!client)
+		return NULL;
+
+	mdwc->wcd_regmap = dev_get_regmap(&client->dev, NULL);
+	put_device(&client->dev);
+
+	return mdwc->wcd_regmap;
+}
+
+/*
+ * Program the board specific DP/DM equalizer of the WCD USB switch, after
+ * wcd_usbss_dpdm_switch_update() has set its default.
+ */
+static void dwc3_msm_update_wcd_usbss_equalizer(struct dwc3_msm *mdwc)
+{
+	struct regmap *regmap;
+
+	if (!mdwc->wcd_usbss || (!mdwc->wcd_equ && !mdwc->wcd_equ_host))
+		return;
+
+	regmap = dwc3_msm_get_wcd_regmap(mdwc);
+	if (!regmap)
+		return;
+
+	regmap_write(regmap, WCD_USBSS_EQUALIZER1,
+		     dwc3_msm_get_role(mdwc) == USB_ROLE_HOST ?
+		     mdwc->wcd_equ_host : mdwc->wcd_equ);
 }
 
 static int dwc3_msm_register_interrupts(struct platform_device *pdev)
@@ -6862,9 +6945,12 @@ static int dwc3_msm_host_notifier(struct notifier_block *nb,
 				dwc3_msm_update_bus_bw(mdwc, BUS_VOTE_SVS);
 				dwc3_msm_host_ss_powerdown(mdwc);
 
-				if (mdwc->wcd_usbss)
+				if (mdwc->wcd_usbss) {
 					wcd_usbss_dpdm_switch_update(true,
 							udev->speed == USB_SPEED_HIGH);
+					if (udev->speed == USB_SPEED_HIGH)
+						dwc3_msm_update_wcd_usbss_equalizer(mdwc);
+				}
 				dwc3_msm_update_interfaces(udev);
 			} else
 				mdwc->max_rh_port_speed = USB_SPEED_SUPER;
@@ -6880,8 +6966,10 @@ static int dwc3_msm_host_notifier(struct notifier_block *nb,
 			if (udev->parent->speed >= USB_SPEED_SUPER)
 				usb_redriver_host_powercycle(mdwc->redriver);
 
-			if (mdwc->wcd_usbss)
+			if (mdwc->wcd_usbss) {
 				wcd_usbss_dpdm_switch_update(true, true);
+				dwc3_msm_update_wcd_usbss_equalizer(mdwc);
+			}
 
 			if (hcd && test_bit(HCD_FLAG_DEAD, &hcd->flags))
 				schedule_work(&mdwc->restart_usb_work);
@@ -7003,8 +7091,10 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 		mdwc->hs_phy->flags |= PHY_HOST_MODE;
 		dbg_event(0xFF, "hs_phy_flag:", mdwc->hs_phy->flags);
 
-		if (mdwc->wcd_usbss)
+		if (mdwc->wcd_usbss) {
 			wcd_usbss_switch_update(WCD_USBSS_USB, WCD_USBSS_CABLE_CONNECT);
+			dwc3_msm_update_wcd_usbss_equalizer(mdwc);
+		}
 
 		ret = pm_runtime_resume_and_get(mdwc->dev);
 		if (ret < 0) {
@@ -7073,12 +7163,17 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 		dwc3_msm_override_pm_ops(&dwc->xhci->dev, mdwc->xhci_pm_ops, true);
 		mdwc->in_host_mode = true;
 		pm_runtime_use_autosuspend(&dwc->xhci->dev);
-		pm_runtime_set_autosuspend_delay(&dwc->xhci->dev, 0);
+		pm_runtime_set_autosuspend_delay(&dwc->xhci->dev, 3000);
 		pm_runtime_allow(&dwc->xhci->dev);
 		pm_runtime_mark_last_busy(&dwc->xhci->dev);
 
 		dwc3_msm_write_reg_field(mdwc->base, DWC3_GUSB3PIPECTL(0),
 				DWC3_GUSB3PIPECTL_SUSPHY, 1);
+
+		/* Limit SuperSpeed host links to Gen1 if the board requires it */
+		if (mdwc->host_force_gen1 && (mdwc->ss_phy->flags & PHY_HOST_MODE))
+			dwc3_msm_write_reg_field(mdwc->base, DWC3_LLUCTL,
+						 DWC3_LLUCTL_FORCE_GEN1, 1);
 
 		/* Reduce the U3 exit handshake timer from 8us to approximately
 		 * 300ns to avoid lfps handshake interoperability issues
@@ -7206,7 +7301,7 @@ static void dwc3_override_vbus_status(struct dwc3_msm *mdwc, bool vbus_present)
 static int dwc3_otg_start_peripheral(struct dwc3_msm *mdwc, int on)
 {
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
-	int timeout = 1000;
+	int timeout = 100;
 	unsigned long flags;
 	int ret;
 
@@ -7222,8 +7317,10 @@ static int dwc3_otg_start_peripheral(struct dwc3_msm *mdwc, int on)
 	if (on) {
 		dev_dbg(mdwc->dev, "%s: turn on gadget\n", __func__);
 
-		if (mdwc->wcd_usbss)
+		if (mdwc->wcd_usbss) {
 			wcd_usbss_switch_update(WCD_USBSS_USB, WCD_USBSS_CABLE_CONNECT);
+			dwc3_msm_update_wcd_usbss_equalizer(mdwc);
+		}
 
 		pm_runtime_get_sync(&mdwc->dwc3->dev);
 		/*
@@ -7496,6 +7593,7 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 			wcd_usbss_dpdm_switch_update(true,
 					dwc->gadget->speed == USB_SPEED_HIGH ||
 					mdwc->eud_active);
+			dwc3_msm_update_wcd_usbss_equalizer(mdwc);
 		}
 		break;
 
