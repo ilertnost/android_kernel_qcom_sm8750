@@ -13,6 +13,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/dma-mapping.h>
 #include <linux/qtee_shmbridge.h>
+#include <linux/wait.h>
 
 #include "qcom_scm.h"
 
@@ -23,6 +24,10 @@
 struct arm_smccc_args {
 	unsigned long args[8];
 };
+
+/* Woken after every SCM call so tz_log readers can pick up new TZ logs */
+DECLARE_WAIT_QUEUE_HEAD(tzdbg_log_wq);
+EXPORT_SYMBOL(tzdbg_log_wq);
 
 static DEFINE_MUTEX(qcom_scm_lock);
 
@@ -297,6 +302,7 @@ int __scm_smc_call(struct device *dev, const struct qcom_scm_desc *desc,
 	}
 
 	ret = (long)smc_res.a0 ? qcom_scm_remap_error(smc_res.a0) : 0;
+	wake_up_interruptible(&tzdbg_log_wq);
 
 	return ret;
 
