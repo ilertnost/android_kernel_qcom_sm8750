@@ -469,6 +469,26 @@ endmenu
 
 source "drivers/thermal/tegra/Kconfig"
 
+config MI_THERMAL_INTERFACE
+	tristate "Xiaomi thermal daemon interface"
+	depends on CPU_FREQ && DRM && POWER_SUPPLY && QCOM_PANEL_EVENT_NOTIFIER
+	help
+	  Kernel side of Xiaomi's thermal daemon (mi_thermald):
+	  /sys/class/thermal/thermal_message, through which the daemon caps
+	  CPU frequencies, follows the screen and USB state and shares its
+	  thermal state with other components.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called mi_thermal_interface.
+
+config MI_THERMAL_INTERFACE_MCA
+	bool "Forward the thermal scene to the MCA charging stack"
+	depends on MI_THERMAL_INTERFACE
+	help
+	  Pass the thermal scene (sconfig) and the board temperature written
+	  by the thermal daemon on to Xiaomi's MCA charging stack, which has
+	  to provide mca_smartchg_set_scene() and mca_event_block_notify().
+
 config GENERIC_ADC_THERMAL
 	tristate "Generic ADC based thermal sensor"
 	depends on IIO
