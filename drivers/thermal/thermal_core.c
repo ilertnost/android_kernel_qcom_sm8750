@@ -821,6 +821,21 @@ static void thermal_release(struct device *dev)
 
 static struct class *thermal_class;
 
+/**
+ * thermal_class_get() - get the thermal device class
+ *
+ * Lets drivers that complement the thermal framework, such as vendor
+ * interfaces to userspace thermal daemons, create their devices under
+ * /sys/class/thermal.
+ *
+ * Return: the thermal class, or NULL before the framework is initialized.
+ */
+const struct class *thermal_class_get(void)
+{
+	return thermal_class;
+}
+EXPORT_SYMBOL_GPL(thermal_class_get);
+
 static inline
 void print_bind_err_msg(struct thermal_zone_device *tz,
 			struct thermal_cooling_device *cdev, int ret)

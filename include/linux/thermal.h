@@ -363,6 +363,7 @@ devm_thermal_of_cooling_device_register(struct device *dev,
 void thermal_cooling_device_update(struct thermal_cooling_device *);
 void thermal_cooling_device_unregister(struct thermal_cooling_device *);
 struct thermal_zone_device *thermal_zone_get_zone_by_name(const char *name);
+const struct class *thermal_class_get(void);
 int thermal_zone_get_temp(struct thermal_zone_device *tz, int *temp);
 int thermal_zone_get_slope(struct thermal_zone_device *tz);
 int thermal_zone_get_offset(struct thermal_zone_device *tz);
@@ -411,6 +412,11 @@ devm_thermal_of_cooling_device_register(struct device *dev,
 static inline void thermal_cooling_device_unregister(
 	struct thermal_cooling_device *cdev)
 { }
+static inline const struct class *thermal_class_get(void)
+{
+	return NULL;
+}
+
 static inline struct thermal_zone_device *thermal_zone_get_zone_by_name(
 		const char *name)
 { return ERR_PTR(-ENODEV); }
