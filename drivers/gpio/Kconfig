@@ -1819,4 +1819,15 @@ config GPIO_SIM
 
 endmenu
 
+config GPIO_MI_T1
+	tristate "Xiaomi T1 RF control GPIOs"
+	depends on OF && PROC_FS
+	help
+	  Drives the GPIOs that configure the Xiaomi T1 RF companion chip
+	  (antenna routing between cellular, WLAN and satellite) to their
+	  default state at boot and lets the telephony stack change them.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called gpio-mi-t1.
+
 endif
