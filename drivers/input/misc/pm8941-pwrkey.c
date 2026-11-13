@@ -12,11 +12,14 @@
 #include <linux/ktime.h>
 #include <linux/log2.h>
 #include <linux/module.h>
+#include <linux/nmi.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/signal.h>
 
 #define PON_REV2			0x01
 
@@ -54,7 +57,18 @@
 #define  PON_DBC_SHIFT_GEN1		6
 #define  PON_DBC_SHIFT_GEN2		14
 
+/* Events passed to the display power key callback */
+#define PMIC_PWRKEY_BARK_TRIGGER	1
+#define PMIC_PWRKEY_TRIGGER		2
+
+enum pm8941_bark {
+	PM8941_NO_BARK,
+	PM8941_PWRKEY_BARK,
+	PM8941_PWRKEY_RESIN_BARK,
+};
+
 struct pm8941_data {
+	enum pm8941_bark bark;
 	unsigned int	pull_up_bit;
 	unsigned int	status_bit;
 	bool		supports_ps_hold_poff_config;
@@ -82,6 +96,80 @@ struct pm8941_pwrkey {
 	bool last_status;
 	const struct pm8941_data *data;
 };
+
+/* Called when the power key bark interrupt fires, before a long press reset */
+RAW_NOTIFIER_HEAD(pwrkey_irq_notifier_list);
+EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);
+
+typedef int (*mi_display_pwrkey_callback)(int);
+static mi_display_pwrkey_callback mi_display_pwrkey_cb;
+
+void mi_display_pwrkey_callback_set(mi_display_pwrkey_callback cb)
+{
+	mi_display_pwrkey_cb = cb;
+	pr_info("%s: func %ps is set.\n", __func__, cb);
+}
+EXPORT_SYMBOL(mi_display_pwrkey_callback_set);
+
+static void pm8941_pwrkey_notify_display(int event)
+{
+	if (mi_display_pwrkey_cb)
+		mi_display_pwrkey_cb(event);
+}
+
+static void pm8941_show_tasks_in_state(unsigned int state)
+{
+	struct task_struct *g, *p;
+
+	pr_info("  task                        PC stack   pid father\n");
+	rcu_read_lock();
+	for_each_process_thread(g, p) {
+		/* Listing every task on a slow console takes a while */
+		touch_nmi_watchdog();
+		if (READ_ONCE(p->__state) == state)
+			sched_show_task(p);
+	}
+	rcu_read_unlock();
+}
+
+/* Returns true when the interrupt needs no further handling */
+static bool pm8941_pwrkey_handle_bark(struct pm8941_pwrkey *pwrkey)
+{
+	unsigned int sts;
+	int loglevel;
+
+	if (regmap_read(pwrkey->regmap, pwrkey->baseaddr + PON_RT_STS, &sts))
+		return true;
+
+	sts &= pwrkey->data->status_bit;
+
+	if (pwrkey->data->bark == PM8941_PWRKEY_BARK) {
+		if (sts) {
+			pm8941_pwrkey_notify_display(PMIC_PWRKEY_BARK_TRIGGER);
+			raw_notifier_call_chain(&pwrkey_irq_notifier_list, 0,
+						NULL);
+		}
+		return true;
+	}
+
+	if (sts) {
+		/*
+		 * Power and volume down are being held: log the tasks that
+		 * are stuck or running before the PMIC resets the device.
+		 */
+		pm8941_pwrkey_notify_display(PMIC_PWRKEY_BARK_TRIGGER);
+		loglevel = console_loglevel;
+		pr_info("pwrkey_resin_bark_irq trigger, start D&R task info");
+		console_loglevel = CONSOLE_LOGLEVEL_MOTORMOUTH;
+		pr_info("------ collect D&R-state processes info before long comb key ------\n");
+		pm8941_show_tasks_in_state(TASK_UNINTERRUPTIBLE);
+		pm8941_show_tasks_in_state(TASK_RUNNING);
+		pr_info("------ end collecting D&R-state processes info ------\n");
+		console_loglevel = loglevel;
+	}
+
+	return false;
+}
 
 static int pm8941_reboot_notify(struct notifier_block *nb,
 				unsigned long code, void *unused)
@@ -151,6 +239,10 @@ static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 	unsigned int sts;
 	int err;
 
+	if (pwrkey->data->bark != PM8941_NO_BARK &&
+	    pm8941_pwrkey_handle_bark(pwrkey))
+		return IRQ_HANDLED;
+
 	if (pwrkey->sw_debounce_time_us) {
 		if (ktime_before(ktime_get(), pwrkey->sw_debounce_end_time)) {
 			dev_dbg(pwrkey->dev,
@@ -182,6 +274,9 @@ static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 
 	input_report_key(pwrkey->input, pwrkey->code, sts);
 	input_sync(pwrkey->input);
+
+	if (pwrkey->code == KEY_POWER && !sts)
+		pm8941_pwrkey_notify_display(PMIC_PWRKEY_TRIGGER);
 
 	return IRQ_HANDLED;
 }
@@ -460,11 +555,33 @@ static const struct pm8941_data pon_gen3_resin_data = {
 	.has_pon_pbs = true,
 };
 
+static const struct pm8941_data pon_gen3_pwrkey_bark_data = {
+	.bark = PM8941_PWRKEY_BARK,
+	.status_bit = PON_GEN3_KPDPWR_N_SET,
+	.name = "pmic_pwrkey_bark",
+	.phys = "pmic_pwrkey_bark/input0",
+	.supports_ps_hold_poff_config = false,
+	.supports_debounce_config = false,
+	.has_pon_pbs = true,
+};
+
+static const struct pm8941_data pon_gen3_pwrkey_resin_bark_data = {
+	.bark = PM8941_PWRKEY_RESIN_BARK,
+	.status_bit = PON_GEN3_KPDPWR_N_SET,
+	.name = "pmic_pwrkey_resin_bark",
+	.phys = "pmic_pwrkey_resin_bark/input0",
+	.supports_ps_hold_poff_config = false,
+	.supports_debounce_config = false,
+	.has_pon_pbs = true,
+};
+
 static const struct of_device_id pm8941_pwr_key_id_table[] = {
 	{ .compatible = "qcom,pm8941-pwrkey", .data = &pwrkey_data },
 	{ .compatible = "qcom,pm8941-resin", .data = &resin_data },
 	{ .compatible = "qcom,pmk8350-pwrkey", .data = &pon_gen3_pwrkey_data },
 	{ .compatible = "qcom,pmk8350-resin", .data = &pon_gen3_resin_data },
+	{ .compatible = "qcom,pmk8350-pwrkey-bark", .data = &pon_gen3_pwrkey_bark_data },
+	{ .compatible = "qcom,pmk8350-pwrkey-resin-bark", .data = &pon_gen3_pwrkey_resin_bark_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, pm8941_pwr_key_id_table);
