@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config FINGERPRINT_MI_FP
+	tristate "Xiaomi fingerprint sensor driver"
+	depends on DRM && NET && OF && QCOM_PANEL_EVENT_NOTIFIER
+	help
+	  Platform driver for the fingerprint sensors on Xiaomi phones. It
+	  handles the sensor power, reset and interrupt lines and, for the
+	  Qualcomm ultrasonic sensors, the finger detect and IPC interrupts
+	  the fingerprint HAL and trusted application rely on.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called mi_fp.

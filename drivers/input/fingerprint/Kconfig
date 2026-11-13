@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+menuconfig INPUT_FINGERPRINT
+	bool "Fingerprint sensors"
+	help
+	  Say Y here to get a list of fingerprint sensor drivers.
+
+if INPUT_FINGERPRINT
+
+source "drivers/input/fingerprint/mi_fp/Kconfig"
+
+endif
