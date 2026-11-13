@@ -1,18 +1,24 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (c) 2022-2023,2025, Qualcomm Innovation Center, Inc. All rights reserved.
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 
 import argparse
 import errno
 import glob
+import hashlib
+import json
 import logging
 import os
 import re
 import sys
 import subprocess
+import concurrent.futures
+import shutil
+import threading
 
 HOST_TARGETS = ["dtc"]
 PHONY_TARGETS = ["16k"]
+SUPPLEMENTARY_SUFFIXES = ("_abl_dist", "_kti_dist", "_vm_images_dist")
 DEFAULT_SKIP_LIST = ["abi"]
 MSM_EXTENSIONS = "build/msm_kernel_extensions.bzl"
 ABL_EXTENSIONS = "build/abl_extensions.bzl"
@@ -26,6 +32,14 @@ if not os.path.exists(DEFAULT_CACHE_DIR):
    os.makedirs(DEFAULT_CACHE_DIR)
 
 os.environ['TEST_TMPDIR'] = DEFAULT_CACHE_DIR
+
+# Version token - bump whenever the query cache format changes
+_QUERY_CACHE_VERSION = 1
+
+# Max parallel workers for the dist phase.  Dist scripts just copy files from
+# the Bazel output tree, so this is I/O-bound; 8 is a safe default that keeps
+# throughput high without saturating the disk or /tmp.
+_MAX_DIST_WORKERS = 8
 
 class Target:
     def __init__(self, workspace, target, variant, bazel_label, out_dir=None):
@@ -62,7 +76,9 @@ class Target:
 class BazelBuilder:
     """Helper class for building with Bazel"""
 
-    def __init__(self, target_list, skip_list, out_dir, cache_dir, dry_run, gki_headers, user_opts):
+    def __init__(
+            self, target_list, skip_list, out_dir, cache_dir,
+            dry_run, gki_headers, user_opts):
         BazelBuilder.targets_done = []
         self.workspace = os.path.realpath(
             os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
@@ -80,6 +96,9 @@ class BazelBuilder:
                 logging.error("invalid target_variant combo \"%s_%s\"", t, v)
                 sys.exit(1)
 
+        self.output_user_root = "--output_user_root=" + os.path.join(cache_dir, "bazel-cache")
+        self.output_root = "--output_root=" + cache_dir
+        self.cache_dir = cache_dir
         self.bazel_cache = "--output_user_root=" + cache_dir
         self.target_list = target_list
         self.skip_list = skip_list
@@ -126,32 +145,118 @@ class BazelBuilder:
                 else:
                     raise e
 
+    def _build_files_hash(self):
+        """Hash every BUILD/bzl file under kernel_dir.
+
+        Any change that affects the dist-target set - a BUILD rule edit, a new
+        target added, or a target removed - will change this hash and force a
+        fresh Bazel query on the next run.
+        """
+        kernel_path = os.path.join(self.workspace, self.kernel_dir)
+        h = hashlib.sha256()
+        seen = set()
+        for root, dirs, files in os.walk(kernel_path, followlinks=True):
+            dirs.sort()
+            for fname in sorted(files):
+                if fname not in ("BUILD", "BUILD.bazel") and not fname.endswith(".bzl"):
+                    continue
+                fpath = os.path.join(root, fname)
+                real = os.path.realpath(fpath)
+                if real in seen:
+                    continue
+                seen.add(real)
+                rel = os.path.relpath(fpath, kernel_path)
+                h.update(rel.encode())
+                try:
+                    with open(fpath, "rb") as f:
+                        h.update(f.read())
+                except OSError:
+                    pass
+        # Also hash the extension bzl files (and their symlink targets)
+        # since they live outside kernel_dir and may be replaced or broken
+        for ext in (MSM_EXTENSIONS, ABL_EXTENSIONS):
+            ext_path = os.path.join(self.workspace, ext)
+            real_path = os.path.realpath(ext_path)
+            # Hash both path strings for cache sensitivity to symlink changes
+            for candidate in (ext_path, real_path):
+                rel = os.path.relpath(candidate, self.workspace)
+                h.update(rel.encode())
+            # Read file content only once (via the real path)
+            if real_path not in seen:
+                seen.add(real_path)
+                try:
+                    with open(real_path, "rb") as f:
+                        h.update(f.read())
+                except OSError:
+                    h.update(b"missing")
+        return h.hexdigest()[:16]
+
+    def _query_cache_key(self):
+        """Stable key over the inputs that determine the target list."""
+        content = "{}:{}:{}:{}:{}".format(
+            _QUERY_CACHE_VERSION,
+            self.kernel_dir,
+            ",".join("{}:{}".format(t, v) for t, v in sorted(self.target_list)),
+            ",".join(sorted(self.skip_list)),
+            self._build_files_hash(),
+        )
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
+
     def get_build_targets(self):
-        """Query for build targets"""
+        """Query for build targets, using a disk cache to avoid repeated Bazel queries."""
+        if self.out_dir and any(v == "ALL" for _, v in self.target_list):
+            logging.error("cannot specify multiple targets (ALL variants) with one out dir")
+            sys.exit(1)
+
+        cache_file = os.path.join(
+            self.cache_dir, "target_query_cache_{}.json".format(self._query_cache_key())
+        )
+
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file) as f:
+                    cached = json.load(f)
+                if cached.get("version") == _QUERY_CACHE_VERSION:
+                    logging.info("Using cached build targets (skipping Bazel query).")
+                    targets = [
+                        Target(
+                            t["workspace"],
+                            t["target"],
+                            t["variant"],
+                            t["bazel_label"],
+                            self.out_dir,
+                        )
+                        for t in cached["targets"]
+                    ]
+                    targets.sort()
+                    return targets
+            except Exception as e:
+                logging.debug("Query cache read failed (%s); re-running query.", e)
+
         logging.info("Querying build targets...")
 
         targets = []
         for t, v in self.target_list:
             if v == "ALL":
-                if self.out_dir:
-                    logging.error("cannot specify multiple targets (ALL variants) with one out dir")
-                    sys.exit(1)
-
                 skip_list_re = [
                     re.compile(r"//{}:{}[^-]*_.*_{}_dist".format(self.kernel_dir, t, s))
                     for s in self.skip_list
                 ]
-                query = 'filter("{}[^-]*_.*_dist$", attr(generator_function, define_msm_platforms, {}/...))'.format(
-                    t, self.kernel_dir
-                )
+                query = (
+                    'filter("{}[^-]*_.*_dist$",'
+                    ' attr(generator_function, define_msm_platforms, {}/...))'
+                ).format(
+                    t, self.kernel_dir)
             else:
                 skip_list_re = [
                     re.compile(r"//{}:{}[^-]*_{}_{}_dist".format(self.kernel_dir, t, v, s))
                     for s in self.skip_list
                 ]
-                query = 'filter("{}[^-]*_{}.*_dist$", attr(generator_function, define_msm_platforms, {}/...))'.format(
-                    t, v, self.kernel_dir
-                )
+                query = (
+                    'filter("{}[^-]*_{}.*_dist$",'
+                    ' attr(generator_function, define_msm_platforms, {}/...))'
+                ).format(
+                    t, v, self.kernel_dir)
 
             cmdline = [
                 self.bazel_bin,
@@ -203,21 +308,40 @@ class BazelBuilder:
         # first when copying to output directory
         targets.sort()
 
+        # Persist the query result so subsequent runs skip this Bazel query entirely.
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            with open(cache_file, "w") as f:
+                json.dump({
+                    "version": _QUERY_CACHE_VERSION,
+                    "targets": [
+                        {"workspace": t.workspace, "target": t.target,
+                         "variant": t.variant, "bazel_label": t.bazel_label}
+                        for t in targets
+                    ],
+                }, f)
+        except Exception as e:
+            logging.debug("Query cache write failed (%s); continuing without cache.", e)
+
         return targets
 
     def clean_legacy_generated_files(self):
         """Clean generated files from legacy build to avoid conflicts with Bazel"""
-        for f in glob.glob("{}/msm-kernel/arch/arm64/configs/vendor/*_defconfig".format(self.workspace)):
+        for f in glob.glob(
+                "{}/msm-kernel/arch/arm64/configs/vendor/*_defconfig".format(
+                    self.workspace)):
             os.remove(f)
 
-        f = os.path.join(self.workspace, "bootable", "bootloader", "edk2", "Conf", ".AutoGenIdFile.txt")
+        f = os.path.join(
+            self.workspace, "bootable", "bootloader", "edk2",
+            "Conf", ".AutoGenIdFile.txt")
         if os.path.exists(f):
             os.remove(f)
 
-        for root, _, files in os.walk(os.path.join(self.workspace, "bootable")):
-            for f in files:
-                if f.endswith(".pyc"):
-                    os.remove(os.path.join(root, f))
+        for pyc in glob.iglob(
+                os.path.join(self.workspace, 'bootable', '**', '*.pyc'),
+                recursive=True):
+            os.remove(pyc)
 
     def bazel(
         self,
@@ -321,7 +445,7 @@ class BazelBuilder:
         cmdline_str = " ".join(cmdline)
         try:
             logging.info('Running "%s"', cmdline_str)
-            build_proc = subprocess.Popen(cmdline_str, cwd=self.workspace, shell=True)
+            build_proc = subprocess.Popen(cmdline, cwd=self.workspace)
             self.process_list.append(build_proc)
             build_proc.wait()
             if build_proc.returncode != 0:
@@ -337,30 +461,172 @@ class BazelBuilder:
         """Run "bazel build" on all targets in parallel"""
         self.bazel("build", targets, extra_options=self.user_opts)
 
+
+    def _get_bazel_bin(self):
+        """Return the bazel-bin and execution_root paths from the warm Bazel server."""
+        try:
+            out = subprocess.check_output(
+                [self.bazel_bin, self.bazel_cache, "info", "bazel-bin", "execution_root"],
+                cwd=self.workspace, stderr=subprocess.DEVNULL,
+            )
+            lines_out = out.decode().strip().splitlines()
+            bazel_bin = lines_out[0].strip()
+            if len(lines_out) > 1:
+                execroot = lines_out[1].strip()
+            else:
+                execroot = os.path.dirname(os.path.dirname(
+                    os.path.dirname(bazel_bin)))
+            return bazel_bin, execroot
+        except subprocess.CalledProcessError as e:
+            logging.error("bazel info failed: %s", e)
+            sys.exit(1)
+
     def run_targets(self, targets):
-        """Run "bazel run" on all targets in serial (since bazel run cannot have multiple targets)"""
-        for target in targets:
-            # Set the output directory based on if it's a host target
+        """Run dist targets in parallel by executing the built scripts directly.
+
+        After bazel build the dist executables already exist under bazel-bin.
+        Running them directly avoids spawning N cold Bazel servers and the
+        I/O contention and /tmp exhaustion that caused the parallel-server
+        approach to regress build time by 3-15x.
+        """
+        bazel_bin, execroot = self._get_bazel_bin()
+        opts_content = ("\n".join(self.user_opts) + "\n") if self.user_opts else "\n"
+
+        def _get_out_dir(target):
             if any(
                 re.match(r"//{}:.*_{}_dist".format(self.kernel_dir, h), target.bazel_label)
                 for h in HOST_TARGETS
             ):
-                out_dir = target.get_out_dir("host")
+                return target.get_out_dir("host")
             elif any(
                 re.match(r"//{}:.*{}.*_dist".format(self.kernel_dir, t), target.bazel_label)
                 for t in PHONY_TARGETS
             ):
-                out_dir = target.get_out_dir() + "16k"
-                out_dir = os.path.join(out_dir, "dist")
-            else:
-                out_dir = target.get_out_dir("dist")
-            self.bazel(
-                "run",
-                [target],
-                extra_options=self.user_opts,
-                bazel_target_opts=["--dist_dir", out_dir]
+                return os.path.join(target.get_out_dir() + "16k", "dist")
+            return target.get_out_dir("dist")
+
+        def _run_one(target):
+            pkg  = target.bazel_label[2:].split(":")[0]
+            name = target.bazel_label.split(":")[1]
+            script = os.path.join(bazel_bin, pkg, name)
+
+            if not os.path.isfile(script):
+                result = subprocess.run(
+                    ["find", bazel_bin, "-maxdepth", "5",
+                     "-name", name, "-type", "f"],
+                    capture_output=True, text=True,
+                )
+                found = result.stdout.strip().split("\n")[0]
+                if found and os.path.isfile(found):
+                    script = found
+
+            if not os.path.isfile(script):
+                return _run_via_bazel(target)
+
+            out_dir = _get_out_dir(target)
+            os.makedirs(out_dir, exist_ok=True)
+
+            env = os.environ.copy()
+            env["BUILD_WORKSPACE_DIRECTORY"] = self.workspace
+            runfiles_dir = script + ".runfiles"
+            if os.path.isdir(runfiles_dir):
+                env["RUNFILES_DIR"] = runfiles_dir
+
+            with _dir_locks_lock:
+                if out_dir not in _dir_locks:
+                    _dir_locks[out_dir] = threading.Lock()
+                _out_dir_lock = _dir_locks[out_dir]
+            with _out_dir_lock:
+                proc = subprocess.Popen(
+                    [script, "--destdir", out_dir],
+                    cwd=execroot, env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                )
+                stdout, _ = proc.communicate()
+                for line in stdout.decode("utf-8", errors="replace").splitlines():
+                    logging.info(line)
+                return proc.returncode, target, out_dir
+
+        _bazel_lock = threading.Lock()
+        _dir_locks = {}
+        _dir_locks_lock = threading.Lock()
+
+        def _run_via_bazel(target):
+            """Warm-server bazel run for alias targets that have no own executable."""
+            out_dir = _get_out_dir(target)
+            os.makedirs(out_dir, exist_ok=True)
+            cmdline = (
+                [self.bazel_bin, self.bazel_cache, "run"]
+                + self.user_opts
+                + [target.bazel_label, "--", "--destdir", out_dir]
             )
-            self.write_opts(out_dir)
+            with _bazel_lock:
+                proc = subprocess.Popen(
+                    cmdline, cwd=self.workspace,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                )
+                stdout, _ = proc.communicate()
+            for line in stdout.decode("utf-8", errors="replace").splitlines():
+                logging.info(line)
+            return proc.returncode, target, out_dir
+
+        # Split into two waves to avoid --wipe_dist_dir races:
+        # Wave 1: base *_dist targets (wipe dist dir) and *_dtc_dist (writes
+        #         to host dir, independent) run first in parallel.
+        # Wave 2: targets in SUPPLEMENTARY_SUFFIXES add files on top of the
+        #         already-populated dist dir (no wipe) and run after.
+        wave1 = [t for t in targets
+                 if not any(t.bazel_label.endswith(s) for s in SUPPLEMENTARY_SUFFIXES)]
+        wave2 = [t for t in targets
+                 if any(t.bazel_label.endswith(s) for s in SUPPLEMENTARY_SUFFIXES)]
+
+        results = []
+        if wave1:
+            w1 = min(len(wave1), _MAX_DIST_WORKERS)
+            logging.info("Running %d dist targets in parallel (wave 1).", len(wave1))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=w1) as pool:
+                results += list(pool.map(_run_one, wave1))
+
+            failed = [(t, rc) for rc, t, _ in results if rc != 0]
+            if failed:
+                for t, rc in failed:
+                    logging.error("Dist target failed (rc=%d): %s", rc, t.bazel_label)
+                sys.exit(failed[0][1])
+
+        wave2_results = []
+        if wave2:
+            w2 = min(len(wave2), _MAX_DIST_WORKERS)
+            logging.info("Running %d dist targets in parallel (wave 2).", len(wave2))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=w2) as pool:
+                wave2_results = list(pool.map(_run_one, wave2))
+            results += wave2_results
+
+            failed = [(t, rc) for rc, t, _ in wave2_results if rc != 0]
+            if failed:
+                for t, rc in failed:
+                    logging.error("Dist target failed (rc=%d): %s", rc, t.bazel_label)
+                sys.exit(failed[0][1])
+
+        for _, target, out_dir in results:
+            self.write_opts(out_dir, opts_content)
+            if out_dir == target.get_out_dir("dist"):
+                self.setup_kbdev_symlinks(out_dir)
+
+    def setup_kbdev_symlinks(self, out_dir):
+        """Setup k*.img symlinks needed for test builds"""
+        images = [
+            "abl.elf", "boot.img", "dtbo.img",
+            "init_boot.img", "super.img", "vendor_boot.img",
+        ]
+        for img in images:
+            src_path = os.path.join(out_dir, img)
+            dst_path = os.path.join(out_dir, "k" + img)
+            dst_exists = os.path.islink(dst_path) or os.path.exists(dst_path)
+            if os.path.isfile(src_path) and not dst_exists:
+                try:
+                    os.symlink(src_path, dst_path)
+                except OSError as e:
+                    logging.warning("Failed to create symlink for %s: %s", img, e)
 
     def run_menuconfig(self):
         """Run menuconfig on all target-variant combos class is initialized with"""
@@ -369,15 +635,15 @@ class BazelBuilder:
             menuconfig_target = [Target(self.workspace, t, v, menuconfig_label, self.out_dir)]
             self.bazel("run", menuconfig_target, bazel_target_opts=["menuconfig"])
 
-    def write_opts(self, out_dir):
+    def write_opts(self, out_dir, content=None):
+        if content is None:
+            content = ("\n".join(self.user_opts) + "\n") if self.user_opts else "\n"
         with open(os.path.join(out_dir, "build_opts.txt"), "w") as opt_file:
-            if self.user_opts:
-                opt_file.write("{}".format("\n".join(self.user_opts)))
-            opt_file.write("\n")
-
+            opt_file.write(content)
     def build(self):
         """Determine which targets to build, then build them"""
         targets_to_build = self.get_build_targets()
+        self._targets = targets_to_build
 
         if not targets_to_build:
             logging.error("no targets to build")
@@ -459,7 +725,10 @@ def main():
         action="append",
         nargs=2,
         required=True,
-        help='Target and variant to build (e.g. -t kalama gki). May be passed multiple times. A special VARIANT may be passed, "ALL", which will build all variants for a particular target',
+        help=('Target and variant to build (e.g. -t kalama gki).'
+              ' May be passed multiple times.'
+              ' A special VARIANT may be passed, "ALL",'
+              ' which will build all variants for a particular target'),
     )
     parser.add_argument(
         "-s",
@@ -467,13 +736,15 @@ def main():
         metavar="BUILD_RULE",
         action="append",
         default=[],
-        help="Skip specific build rules (e.g. --skip abl will skip the //msm-kernel:<target>_<variant>_abl build)",
+        help=("Skip specific build rules (e.g. --skip abl will skip"
+              " the //msm-kernel:<target>_<variant>_abl build)"),
     )
     parser.add_argument(
         "-o",
         "--out_dir",
         metavar="OUT_DIR",
-        help='Specify the output distribution directory (by default, "$PWD/out/msm-kernel-<target>-variant")',
+        help=('Specify the output distribution directory'
+              ' (by default, "$PWD/out/msm-kernel-<target>-variant")'),
     )
     parser.add_argument(
         "--log",

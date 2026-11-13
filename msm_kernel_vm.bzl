@@ -1,3 +1,12 @@
+load(
+    "//build:msm_kernel_extensions.bzl",
+    "define_extras",
+    "get_build_config_fragments",
+    "get_dtb_list",
+    "get_dtbo_list",
+    "get_dtstree",
+    "get_vendor_ramdisk_binaries",
+)
 load("//build/bazel_common_rules/dist:dist.bzl", "copy_to_dist_dir")
 load("//build/kernel/kleaf:constants.bzl", "aarch64_outs")
 load(
@@ -19,9 +28,9 @@ load(
     "get_dtstree",
     "get_vendor_ramdisk_binaries",
 )
+load(":image_opts.bzl", "vm_image_opts")
 load(":msm_common.bzl", "define_top_level_config", "gen_config_without_source_lines", "get_out_dir")
 load(":msm_dtc.bzl", "define_dtc_dist")
-load(":image_opts.bzl", "vm_image_opts")
 load(":target_variants.bzl", "vm_variants")
 
 def define_make_vm_dtb_img(target, dtb_list, page_size):
@@ -141,7 +150,7 @@ def _define_kernel_build(
       dtb_list: device tree blobs expected to be built
       dtbo_list: device tree overlay blobs expected to be built
     """
-    out_list = [".config", "Module.symvers"]
+    out_list = [".config", "Module.symvers", "utsrelease.h"]
 
     if dtb_list:
         out_list += dtb_list

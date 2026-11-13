@@ -1297,4 +1297,13 @@ config SENSORS_SSC
 	  exercising sensor use-cases. This driver loads firmware files
 	  for SSC and also does time synchronization with DSP clock.
 
+config QCOM_WEAR_CONFIG
+	tristate "Qualcomm Wear configuration driver"
+	depends on NVMEM
+	help
+	  This driver provides a stable sysfs class interface to bridge
+	  userspace clients and kernel subsystems on Qualcomm wearable platforms.
+	  Platform parameters are exposed as class attributes that
+	  can be queried and updated at runtime.
+
 endmenu

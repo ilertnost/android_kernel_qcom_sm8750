@@ -121,3 +121,4 @@ obj-$(CONFIG_QTI_DMOF_SCMI) += qti_dmof_scmi.o
 obj-$(CONFIG_QCOM_PMIC_ECID) += qcom-pmic-ecid.o
 obj-$(CONFIG_QCOM_CX_IPEAK) += cx_ipeak.o
 obj-$(CONFIG_SENSORS_SSC) += sensors_ssc.o
+obj-$(CONFIG_QCOM_WEAR_CONFIG) += wear_config.o
