@@ -2109,8 +2109,18 @@ out:
 	return ret;
 }
 
-static int cs_dsp_load_coeff(struct cs_dsp *dsp, const struct firmware *firmware,
-			     const char *file)
+/**
+ * cs_dsp_load_coeff() - Load a coefficient (.bin) file into a running DSP
+ * @dsp: pointer to DSP structure
+ * @firmware: the coefficient file
+ * @file: name of the coefficient file, used for logging
+ *
+ * Allows callers to apply additional tuning after cs_dsp_power_up().
+ *
+ * Return: Zero for success, a negative number on error.
+ */
+int cs_dsp_load_coeff(struct cs_dsp *dsp, const struct firmware *firmware,
+		      const char *file)
 {
 	LIST_HEAD(buf_list);
 	struct regmap *regmap = dsp->regmap;
@@ -2310,6 +2320,7 @@ out_fw:
 
 	return ret;
 }
+EXPORT_SYMBOL_NS_GPL(cs_dsp_load_coeff, FW_CS_DSP);
 
 static int cs_dsp_create_name(struct cs_dsp *dsp)
 {
