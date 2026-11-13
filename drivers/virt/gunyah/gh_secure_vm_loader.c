@@ -23,6 +23,7 @@
 #include <linux/of.h>
 #include <linux/mm.h>
 #include <linux/cpu.h>
+#include <linux/delay.h>
 #include <linux/workqueue.h>
 #include <soc/qcom/secure_buffer.h>
 
@@ -44,6 +45,7 @@ struct gh_sec_vm_dev {
 	bool system_vm;
 	bool keep_running;
 	phys_addr_t fw_phys;
+	dma_addr_t dma_handle;
 	void *fw_virt;
 	ssize_t fw_size;
 	struct gh_sec_ext_region *ext_region;
@@ -357,31 +359,62 @@ release_fw:
 	return ret;
 }
 
+#define GH_SEC_VM_FW_ALLOC_RETRIES	10
+#define GH_SEC_VM_FW_ALLOC_RETRY_MS	5
+
+/*
+ * The firmware of a dynamically placed VM lives in CMA. Allocations can fail
+ * transiently while the CMA pages are being migrated (e.g. under filemap
+ * reads), so retry a few times.
+ */
+static int gh_sec_vm_alloc_fw_mem(struct gh_sec_vm_dev *vm_dev)
+{
+	struct device *dev = vm_dev->dev;
+	int i;
+
+	if (vm_dev->fw_virt)
+		return 0;
+
+	for (i = 0; i < GH_SEC_VM_FW_ALLOC_RETRIES; i++) {
+		vm_dev->fw_virt = dma_alloc_coherent(dev, vm_dev->fw_size,
+						     &vm_dev->dma_handle,
+						     GFP_KERNEL);
+		if (vm_dev->fw_virt) {
+			vm_dev->fw_phys = dma_to_phys(dev, vm_dev->dma_handle);
+			return 0;
+		}
+
+		msleep(GH_SEC_VM_FW_ALLOC_RETRY_MS);
+	}
+
+	dev_err(dev, "Couldn't allocate cma memory %d times for %s with %d\n",
+		i, vm_dev->vm_name, -ENOMEM);
+
+	return -ENOMEM;
+}
+
+static void gh_sec_vm_free_fw_mem(struct gh_sec_vm_dev *vm_dev)
+{
+	dma_free_coherent(vm_dev->dev, vm_dev->fw_size, vm_dev->fw_virt,
+			  vm_dev->dma_handle);
+	vm_dev->fw_virt = NULL;
+}
+
 static int gh_sec_vm_loader_load_fw(struct gh_sec_vm_dev *vm_dev,
 							struct gh_vm *vm)
 {
 	enum gh_vm_names vm_name;
-	dma_addr_t dma_handle;
 	struct device *dev;
 	int ret = 0;
-	void *virt;
 
 	dev = vm_dev->dev;
 
 	vm_name = get_gh_vm_name(vm_dev->vm_name);
 
 	if (!vm_dev->is_static) {
-		virt = dma_alloc_coherent(dev, vm_dev->fw_size, &dma_handle,
-				GFP_KERNEL);
-		if (!virt) {
-			ret = -ENOMEM;
-			dev_err(dev, "Couldn't allocate cma memory for %s %d\n",
-						vm_dev->vm_name, ret);
+		ret = gh_sec_vm_alloc_fw_mem(vm_dev);
+		if (ret)
 			return ret;
-		}
-
-		vm_dev->fw_virt = virt;
-		vm_dev->fw_phys = dma_to_phys(dev, dma_handle);
 	}
 
 	ret = gh_rm_vm_alloc_vmid(vm_name, &vm_dev->vmid);
@@ -389,7 +422,7 @@ static int gh_sec_vm_loader_load_fw(struct gh_sec_vm_dev *vm_dev,
 		dev_err(dev, "Couldn't allocate VMID for %s %d\n",
 						vm_dev->vm_name, ret);
 		if (!vm_dev->is_static)
-			dma_free_coherent(dev, vm_dev->fw_size, virt, dma_handle);
+			gh_sec_vm_free_fw_mem(vm_dev);
 		return ret;
 	}
 
@@ -642,10 +675,8 @@ int gh_secure_vm_loader_reclaim_fw(struct gh_vm *vm)
 
 	ret = gh_reclaim_mem(vm, sec_vm_dev->fw_phys,
 			sec_vm_dev->fw_size, sec_vm_dev->system_vm);
-	if (!ret && !sec_vm_dev->is_static) {
-		dma_free_coherent(dev, sec_vm_dev->fw_size, sec_vm_dev->fw_virt,
-			phys_to_dma(dev, sec_vm_dev->fw_phys));
-	}
+	if (!ret && !sec_vm_dev->is_static)
+		gh_sec_vm_free_fw_mem(sec_vm_dev);
 
 	return ret;
 }
@@ -691,6 +722,11 @@ static int gh_vm_loader_mem_probe(struct gh_sec_vm_dev *sec_vm_dev)
 		}
 
 		sec_vm_dev->fw_size = rmem->size;
+
+		/* Grab the CMA memory early, while it is still easy to get */
+		ret = gh_sec_vm_alloc_fw_mem(sec_vm_dev);
+		if (ret)
+			goto err_of_node_put;
 	} else {
 		sec_vm_dev->is_static = true;
 		ret = of_address_to_resource(node, 0, &res);

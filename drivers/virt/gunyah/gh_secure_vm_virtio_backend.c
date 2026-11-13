@@ -36,6 +36,7 @@
 #include "gh_secure_vm_virtio_backend.h"
 #include "hcall_virtio.h"
 #include <linux/firmware/qcom/qcom_scm.h>
+#include <linux/delay.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/gh_virtio_backend.h>
@@ -83,6 +84,7 @@ struct virt_machine {
 	u64 shmem_size;
 	struct device *com_mem_dev;
 	bool is_static;
+	bool shm_allocated;
 };
 
 struct ioevent_context {
@@ -918,6 +920,55 @@ err:
 	return NULL;
 }
 
+//should call after mem_dev was inited
+static int alloc_vm_shm(struct virt_machine *vm)
+{
+	int ret = 0;
+	int i = 0;
+	int j = 0;
+	dma_addr_t dma_handle;
+	int max_retry_times = 10;
+	int retry_time = 0;
+	if (!vm->com_mem_dev) {
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < vm->shmem_entries; ++i) {
+		retry_time = 0;
+		do {
+			vm->shmem[i].base = dma_alloc_coherent(vm->com_mem_dev, vm->shmem[i].size,
+							       &dma_handle, GFP_KERNEL);
+			if (vm->shmem[i].base) {
+				break;
+			}
+
+			retry_time++;
+			msleep(5);
+		} while (retry_time < max_retry_times);
+
+		if (!vm->shmem[i].base) {
+			i--;
+			j = i;
+			ret = -ENOMEM;
+			goto free_shm;
+		}
+
+		vm->shmem[i].r.start = dma_to_phys(vm->com_mem_dev, dma_handle);
+		vm->shmem[i].r.end = vm->shmem[i].r.start + vm->shmem[i].size - 1;
+		dev_info(vm->dev, "%s: Pre-allocate VM '%s' shmem index %d shmem_size %x\n",
+				 VIRTIO_PRINT_MARKER, vm->vm_name, i, vm->shmem[i].size);
+	}
+
+	vm->shm_allocated = true;
+	return 0;
+free_shm:
+	for (; j >= 0; --j)
+		dma_free_coherent(vm->com_mem_dev, vm->shmem[j].size, vm->shmem[j].base,
+				  phys_to_dma(vm->com_mem_dev, vm->shmem[j].r.start));
+
+	return ret;
+}
+
 static struct virt_machine *
 new_vm(struct device *dev, const char *vm_name, struct device_node *np)
 {
@@ -953,6 +1004,13 @@ new_vm(struct device *dev, const char *vm_name, struct device_node *np)
 	} else {
 		vm->com_mem_dev = gh_alloc_memdev(dev, "com_mem", 1);
 		if (!vm->com_mem_dev) {
+			return NULL;
+		}
+
+		ret = alloc_vm_shm(vm);
+		if (ret) {
+			dev_err(vm->dev, "%s: Failed to alloc virtio backend shared memory size for VM %s\n",
+					VIRTIO_PRINT_MARKER, vm_name);
 			return NULL;
 		}
 
@@ -1217,6 +1275,7 @@ static int unshare_vm_buffers(struct virt_machine *vm, gh_vmid_t peer)
 				phys_to_dma(vm->com_mem_dev, vm->shmem[i].r.start));
 	}
 	vm->hyp_assign_done = 0;
+	vm->shm_allocated = false;
 	return 0;
 }
 
@@ -1283,6 +1342,8 @@ static int share_a_vm_buffer(gh_vmid_t self, gh_vmid_t peer, int gunyah_label,
 static int share_vm_buffers(struct virt_machine *vm, gh_vmid_t peer)
 {
 	int i, j, ret;
+	int retry_time = 0;
+	const int max_retry_times = 10;
 	gh_vmid_t self_vmid;
 	dma_addr_t dma_handle;
 
@@ -1291,9 +1352,19 @@ static int share_vm_buffers(struct virt_machine *vm, gh_vmid_t peer)
 		return ret;
 
 	for (i = 0; i < vm->shmem_entries; ++i) {
-		if (!vm->is_static) {
-			vm->shmem[i].base = dma_alloc_coherent(vm->com_mem_dev, vm->shmem[i].size,
-				&dma_handle, GFP_KERNEL);
+		if (!vm->is_static && !vm->shm_allocated) {
+			retry_time = 0;
+			do {
+				vm->shmem[i].base = dma_alloc_coherent(vm->com_mem_dev, vm->shmem[i].size,
+								       &dma_handle, GFP_KERNEL);
+				if (vm->shmem[i].base) {
+					break;
+				}
+
+				retry_time++;
+				msleep(50);
+			} while (retry_time < max_retry_times);
+
 			if (!vm->shmem[i].base) {
 				i--;
 				j = i;
@@ -1303,6 +1374,8 @@ static int share_vm_buffers(struct virt_machine *vm, gh_vmid_t peer)
 
 			vm->shmem[i].r.start = dma_to_phys(vm->com_mem_dev, dma_handle);
 			vm->shmem[i].r.end = vm->shmem[i].r.start + vm->shmem[i].size - 1;
+			dev_info(vm->dev, "%s: Runtime-allocate VM '%s' virtio backend shmem idx %d\n",
+					 VIRTIO_PRINT_MARKER, vm->vm_name, i);
 		}
 
 		ret = share_a_vm_buffer(self_vmid, peer, vm->shmem[i].gunyah_label,
@@ -1314,6 +1387,7 @@ static int share_vm_buffers(struct virt_machine *vm, gh_vmid_t peer)
 		}
 	}
 
+	vm->shm_allocated = true;
 	vm->hyp_assign_done = 1;
 	return 0;
 
