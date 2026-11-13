@@ -18,7 +18,7 @@
 #include <trace/hooks/cpuidle_psci.h>
 
 static void __iomem *base;
-static int msm_show_resume_irq_mask;
+static int msm_show_resume_irq_mask = 1;
 module_param_named(debug_mask, msm_show_resume_irq_mask, int, 0664);
 
 static void msm_show_resume_irqs(void)
