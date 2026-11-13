@@ -9,3 +9,4 @@
 subdir-ccflags-y += -I$(srctree)/$(src)/include
 
 obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_common/
+obj-$(CONFIG_XM_POWER_SUPPLY)	+= mca_platform/
