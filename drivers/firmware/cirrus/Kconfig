@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 config FW_CS_DSP
-	tristate
+	tristate "Cirrus Logic DSP firmware support"
 	default n
+	help
+	  Support library for loading firmware and tunings onto Cirrus Logic
+	  Halo Core and ADSP DSPs. It is selected by the in-tree codec drivers
+	  that need it; enable it explicitly for out-of-tree codec drivers.
