@@ -6,6 +6,7 @@ mitee_dlkm-y := \
 	mitee_msgq.o \
 	mitee_notify.o \
 	mitee_task.o \
+	mitee_tui.o \
 	optee_call.o \
 	optee_rpc.o \
 	optee_supp.o \

@@ -18,6 +18,7 @@
 
 #include "mitee_msgq.h"
 #include "mitee_private.h"
+#include "mitee_tui.h"
 
 struct mitee *mitee_svc;
 
@@ -406,6 +407,7 @@ static int __init mitee_core_init(void)
 		of_node_put(np);
 		return -ENOMEM;
 	}
+	mitee->tui_supported = of_property_read_bool(np, "tui-supported");
 	of_node_put(np);
 
 	optee_wait_queue_init(&mitee->wait_queue);
@@ -483,6 +485,14 @@ static int __init mitee_core_init(void)
 	}
 	set_user_nice(mitee->worker, MIN_NICE);
 
+	if (mitee->tui_supported) {
+		rc = mitee_tui_init();
+		if (rc)
+			pr_err("failed to initialize tui, ret=%d\n", rc);
+	} else {
+		pr_warn("tui is not supported on this platform, init\n");
+	}
+
 	pr_info("initialized driver\n");
 	return 0;
 
@@ -517,6 +527,11 @@ module_init(mitee_core_init);
 static void __exit mitee_core_exit(void)
 {
 	struct mitee *mitee = mitee_svc;
+
+	if (mitee->tui_supported)
+		mitee_tui_exit();
+	else
+		pr_warn("tui is not supported on this platform, deinit\n");
 
 	/*
 	 * The two devices have to be unregistered before we can free the

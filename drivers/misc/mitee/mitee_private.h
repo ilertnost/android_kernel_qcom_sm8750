@@ -129,6 +129,7 @@ struct mitee_task_list {
  * @worker:		thread passing calls and RPCs between Linux and the TEE
  * @worker_wq:		wakes up @worker when a call is queued
  * @call_notifier:	called each time the TEE returns to Linux
+ * @tui_supported:	the platform supports the trusted UI
  */
 struct mitee {
 	struct tee_device *supp_teedev;
@@ -144,6 +145,7 @@ struct mitee {
 	struct task_struct *worker;
 	wait_queue_head_t worker_wq;
 	struct atomic_notifier_head call_notifier;
+	bool tui_supported;
 };
 
 struct optee_session {
