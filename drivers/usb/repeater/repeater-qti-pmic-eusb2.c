@@ -336,12 +336,12 @@ static int eusb2_repeater_init(struct usb_repeater *ur)
 	unsigned int rptr_init_cnt = INIT_MAX_CNT;
 
 	/* override init sequence using devicetree based values */
-	eusb2_repeater_update_seq(er, er->param_override_seq,
-			er->param_override_seq_cnt);
-
 	if (ur->flags & PHY_HOST_MODE)
 		eusb2_repeater_update_seq(er, er->host_param_override_seq,
 				er->host_param_override_seq_cnt);
+	else
+		eusb2_repeater_update_seq(er, er->param_override_seq,
+				er->param_override_seq_cnt);
 
 	/* override tune params using debugfs based values */
 	if (er->usb2_crossover <= 0x7)
