@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config MITEE
+	tristate "Xiaomi MiTEE driver"
+	depends on ARM64 && OF
+	depends on GH_MSGQ && GH_RM_DRV
+	depends on QCOM_SCM && QCOM_SECURE_BUFFER && QCOM_MINIDUMP
+	depends on CRYPTO_SHA1
+	depends on TEE = n
+	select GENERIC_ALLOCATOR
+	help
+	  Driver for MiTEE, Xiaomi's OP-TEE based trusted execution
+	  environment running in a Gunyah virtual machine. It provides the
+	  TEE client and supplicant devices (/dev/tee0, /dev/teepriv0), the
+	  TEE log (/proc/mitee_log) and the trusted UI devices
+	  (/dev/mitee-tui, /dev/mitee-tui-supp).
+
+	  It carries its own instance of the TEE subsystem and cannot be used
+	  together with CONFIG_TEE.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called mitee_dlkm.

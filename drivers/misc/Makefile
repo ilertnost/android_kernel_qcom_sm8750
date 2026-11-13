@@ -75,3 +75,4 @@ obj-$(CONFIG_XIAOMI_IR_SPI)	+= ir-spi.o
 obj-$(CONFIG_XIAOMI_WIFI_GPIO)	+= xiaomi_wifi_gpio.o
 ir-spi-y			:= xiaomi-ir-spi.o
 obj-$(CONFIG_PKVM_SMC_FILTER)  += pkvm-smc/
+obj-$(CONFIG_MITEE)		+= mitee/
