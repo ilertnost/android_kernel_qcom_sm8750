@@ -597,6 +597,17 @@ config HL7603_BOOST
 	  To compile this driver as a module, choose M here: the module will
 	  be called hl7603.
 
+config XIAOMI_WIFI_GPIO
+	tristate "Xiaomi WLAN SAR GPIO"
+	depends on GPIOLIB && OF && NET && MI_HARDWARE_ID
+	help
+	  Publishes the level of the GPIO that selects the WLAN SAR limits on
+	  Chinese Xiaomi phones to the WLAN supplicant over the "wifi_sar"
+	  generic netlink family.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called xiaomi_wifi_gpio.
+
 config XIAOMI_IR_SPI
 	tristate "Xiaomi SPI IR LED character device"
 	depends on SPI && !IR_SPI

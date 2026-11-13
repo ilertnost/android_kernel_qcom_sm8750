@@ -72,5 +72,6 @@ obj-$(CONFIG_QSEECOM_PROXY) 	+= qseecom_proxy.o
 obj-$(CONFIG_MI_HARDWARE_ID)	+= hwid/
 obj-$(CONFIG_HL7603_BOOST)	+= hl7603.o
 obj-$(CONFIG_XIAOMI_IR_SPI)	+= ir-spi.o
+obj-$(CONFIG_XIAOMI_WIFI_GPIO)	+= xiaomi_wifi_gpio.o
 ir-spi-y			:= xiaomi-ir-spi.o
 obj-$(CONFIG_PKVM_SMC_FILTER)  += pkvm-smc/
