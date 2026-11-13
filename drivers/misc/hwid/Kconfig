@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config MI_HARDWARE_ID
+	tristate "Xiaomi hardware ID"
+	depends on QCOM_SOCINFO
+	help
+	  Exposes the board description the Xiaomi bootloader passes on the
+	  kernel command line (hwid.project, hwid.hwid_value, hwid.project_adc
+	  and hwid.build_adc) to the drivers that adapt to the project,
+	  hardware revision or sales region.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called hwid.
