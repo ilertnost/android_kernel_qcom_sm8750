@@ -587,6 +587,19 @@ config PKVM_SMC_FILTER
 
 	  Say N here unless you know what you are doing.
 
+config XIAOMI_IR_SPI
+	tristate "Xiaomi SPI IR LED character device"
+	depends on SPI && !IR_SPI
+	help
+	  Character device driving an IR LED connected to a SPI MOSI line,
+	  as used on Xiaomi phones. Userspace sets the burst length with
+	  LIRC_SET_SEND_MODE on /dev/ir_spi and writes the pre-rendered
+	  carrier bitmap. This is the interface Xiaomi's consumer IR HAL
+	  expects; the rc-core based IR_SPI driver binds to the same devices.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called ir-spi.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

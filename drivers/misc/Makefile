@@ -70,4 +70,6 @@ obj-$(CONFIG_TPS6594_PFSM)	+= tps6594-pfsm.o
 obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
 obj-$(CONFIG_QSEECOM_PROXY) 	+= qseecom_proxy.o
 obj-$(CONFIG_MI_HARDWARE_ID)	+= hwid/
+obj-$(CONFIG_XIAOMI_IR_SPI)	+= ir-spi.o
+ir-spi-y			:= xiaomi-ir-spi.o
 obj-$(CONFIG_PKVM_SMC_FILTER)  += pkvm-smc/
