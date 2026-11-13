@@ -208,6 +208,7 @@ static int ufs_qcom_ber_threshold_set(const char *val, const struct kernel_param
 static int ufs_qcom_ber_duration_set(const char *val, const struct kernel_param *kp);
 static void ufs_qcom_ber_mon_init(struct ufs_hba *hba);
 static void ufs_qcom_enable_vccq_proxy_vote(struct ufs_hba *hba);
+static void ufs_qcom_toggle_pri_affinity(struct ufs_hba *hba, bool on);
 
 static s64 idle_time[UFS_QCOM_BER_MODE_MAX];
 static ktime_t idle_start;
@@ -447,6 +448,9 @@ static inline void cancel_dwork_unvote_cpufreq(struct ufs_hba *hba)
 	if (!host->cur_freq_vote)
 		return;
 	atomic_set(&host->num_reqs_threshold, 0);
+	/* Requests stop being steered to the big cores with the vote */
+	if (host->irq_affinity_support)
+		ufs_qcom_toggle_pri_affinity(hba, false);
 
 	for (i = 0; i < host->num_cpus; i++) {
 		err = ufs_qcom_mod_min_cpufreq(host->cpu_info[i].first_cpu,
@@ -2659,10 +2663,14 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
 	if (!host->disable_lpm) {
+		/*
+		 * Xiaomi runs the link without clock scaling and lets the UFS
+		 * LUNs runtime suspend.
+		 */
 		hba->caps |= UFSHCD_CAP_CLK_GATING |
 			UFSHCD_CAP_HIBERN8_WITH_CLK_GATING |
-			UFSHCD_CAP_CLK_SCALING |
 			UFSHCD_CAP_AUTO_BKOPS_SUSPEND |
+			UFSHCD_CAP_RPM_AUTOSUSPEND |
 			UFSHCD_CAP_AGGR_POWER_COLLAPSE |
 			UFSHCD_CAP_WB_WITH_CLK_SCALING;
 		if (!host->disable_wb_support)
@@ -3530,8 +3538,6 @@ static int ufs_qcom_set_cur_therm_state(struct thermal_cooling_device *tcd,
 		/* Stop setting hi-pri to requests and set irq affinity to default value */
 		atomic_set(&host->therm_mitigation, 1);
 		cancel_dwork_unvote_cpufreq(hba);
-		if (host->irq_affinity_support)
-			ufs_qcom_toggle_pri_affinity(hba, false);
 
 		/* Set the default auto-hiberate idle timer to 1 ms */
 		ufshcd_auto_hibern8_update(hba, ufs_qcom_us_to_ahit(1000));
