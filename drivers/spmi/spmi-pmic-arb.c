@@ -309,7 +309,11 @@ static int pmic_arb_wait_for_done(struct spmi_controller *ctrl,
 			if (status & PMIC_ARB_STATUS_FAILURE) {
 				dev_err(&ctrl->dev, "%s: %#x %#x: transaction failed (%#x)\n",
 					__func__, sid, addr, status);
-				WARN_ON(1);
+				/*
+				 * Accesses to the optional PMICs at these SIDs
+				 * are expected to fail on some Xiaomi boards.
+				 */
+				WARN_ON(sid != 0x4 && sid != 0xd);
 				return -EIO;
 			}
 
