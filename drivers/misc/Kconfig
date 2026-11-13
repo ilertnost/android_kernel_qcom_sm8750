@@ -587,6 +587,16 @@ config PKVM_SMC_FILTER
 
 	  Say N here unless you know what you are doing.
 
+config HL7603_BOOST
+	tristate "HL7603 bypass boost converter"
+	depends on I2C
+	help
+	  Programs the output threshold of the HL7603 buck-boost converter
+	  that keeps the system rail up on some Xiaomi phones.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called hl7603.
+
 config XIAOMI_IR_SPI
 	tristate "Xiaomi SPI IR LED character device"
 	depends on SPI && !IR_SPI
