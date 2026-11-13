@@ -92,6 +92,9 @@
 
 #define LED_MASK_ALL(led)		GENMASK(led->max_channels - 1, 0)
 
+/* Maximum number of current/duration pairs in xiaomi,currents-with-time */
+#define MAX_CURRENT_LIMIT_LEVELS	10
+
 enum flash_led_type {
 	FLASH_LED_TYPE_UNKNOWN,
 	FLASH_LED_TYPE_FLASH,
@@ -117,9 +120,23 @@ enum thermal_levels {
 	OTST_MAX,
 };
 
+/*
+ * Board limits on the LED current depending on how long it stays on:
+ * max_currents[i] may be used for at most time_for_currents[i] ms, sorted by
+ * duration, and always_on_max_current applies to anything longer.
+ */
+struct current_limits {
+	u32				max_currents[MAX_CURRENT_LIMIT_LEVELS];
+	u32				time_for_currents[MAX_CURRENT_LIMIT_LEVELS];
+	u8				num_current;
+	u32				always_on_max_current;
+};
+
 struct flash_node_data {
 	struct qti_flash_led		*led;
 	struct led_classdev_flash	fdev;
+	struct current_limits		current_limits;
+	u32				max_duration;
 	u32				ires_ua;
 	u32				default_ires_ua;
 	u32				user_current_ma;
@@ -569,15 +586,43 @@ static int __qti_flash_led_brightness_set(struct led_classdev *led_cdev,
 	return rc;
 }
 
+/* Clamp the requested current to what the board allows for off_time_ms */
+static void qti_flash_apply_current_limits(struct flash_node_data *fnode,
+					   u64 off_time_ms)
+{
+	struct current_limits *limits = &fnode->current_limits;
+	u32 max_current = limits->always_on_max_current;
+	int i;
+
+	if (off_time_ms) {
+		for (i = 0; i < limits->num_current; i++) {
+			if (off_time_ms <= limits->time_for_currents[i]) {
+				max_current = limits->max_currents[i];
+				break;
+			}
+		}
+	}
+
+	if (max_current && fnode->user_current_ma > max_current) {
+		pr_err("%s: limiting flash LED fnode[%d] current from %u to %u\n",
+			__func__, fnode->id, fnode->user_current_ma,
+			max_current);
+		fnode->user_current_ma = max_current;
+	}
+}
+
 static int qti_flash_config_group_symmetry(struct qti_flash_led *led,
 					   enum flash_led_type type,
-					   u32 led_mask)
+					   u32 led_mask, u64 off_time_ms)
 {
 	int i, rc = 0, total_curr_ma = 0, symmetric_leds = 0, per_led_curr_ma;
 
 	for (i = 0; i < led->num_fnodes; i++) {
 		if ((led_mask & BIT(led->fnode[i].id)) &&
 			(led->fnode[i].type == type)) {
+			if (led->fnode[i].current_limits.num_current)
+				qti_flash_apply_current_limits(&led->fnode[i],
+							       off_time_ms);
 			total_curr_ma += led->fnode[i].user_current_ma;
 			symmetric_leds++;
 		}
@@ -634,7 +679,8 @@ static int qti_flash_led_symmetry_config(struct flash_switch_data *snode,
 		for (i = 0; i < led->num_snodes; i++) {
 			if (led->snode[i].led_mask != LED_MASK_ALL(led)) {
 				rc = qti_flash_config_group_symmetry(led, type,
-						led->snode[i].led_mask);
+						led->snode[i].led_mask,
+						snode[i].off_time_ms);
 				if (rc < 0)
 					return rc;
 
@@ -644,7 +690,7 @@ static int qti_flash_led_symmetry_config(struct flash_switch_data *snode,
 		}
 	} else {
 		rc = qti_flash_config_group_symmetry(led, type,
-				snode->led_mask);
+				snode->led_mask, snode->off_time_ms);
 		if (rc < 0)
 			return rc;
 
@@ -835,6 +881,8 @@ static void qti_flash_led_switch_brightness_set(
 
 		rc = qti_flash_switch_enable(snode);
 	} else {
+		/* Switched off before the off timer expired */
+		hrtimer_cancel(&snode->off_timer);
 		rc = qti_flash_switch_disable(snode);
 	}
 
@@ -867,6 +915,8 @@ static enum hrtimer_restart off_timer_function(struct hrtimer *timer)
 			struct flash_switch_data, off_timer);
 	int rc = 0;
 
+	pr_warn("%s: off timer timeout, disable flash LED switch %s\n",
+		__func__, snode->cdev.name);
 	rc = qti_flash_switch_disable(snode);
 	if (rc < 0)
 		pr_err("Failed to disable flash LED switch %s, rc=%d\n",
@@ -1218,8 +1268,10 @@ static ssize_t qti_flash_off_time_store(struct device *dev,
 	if (rc < 0)
 		return rc;
 
-	val = min_t(u64, val, SAFETY_TIMER_MAX_TIMEOUT_MS);
-
+	/*
+	 * The off timer may exceed the hardware safety timer so that torch
+	 * use can be bounded too; flash use stays bound by the latter.
+	 */
 	snode = container_of(led_cdev, struct flash_switch_data, cdev);
 	snode->off_time_ms = val;
 
@@ -1340,6 +1392,7 @@ static int qti_flash_timeout_set(struct led_classdev_flash *fdev,
 	}
 
 	timeout = timeout / 1000;
+	timeout = min(fnode->max_duration, timeout);
 
 	rc = timeout_to_code(timeout);
 	if (rc < 0)
@@ -1556,6 +1609,90 @@ sysfs_fail:
 	return rc;
 }
 
+/* Drop unusable limits, cap the others to max_current and sort by duration */
+static void qti_flash_sanitize_current_limits(struct flash_node_data *fnode)
+{
+	struct current_limits *limits = &fnode->current_limits;
+	u32 cur, time;
+	int i, j;
+
+	for (i = 0; i < limits->num_current; i++) {
+		if (!limits->max_currents[i]) {
+			limits->num_current--;
+			limits->max_currents[i] =
+				limits->max_currents[limits->num_current];
+			limits->time_for_currents[i] =
+				limits->time_for_currents[limits->num_current];
+			i--;
+		} else if (limits->max_currents[i] > fnode->max_current) {
+			limits->max_currents[i] = fnode->max_current;
+		}
+	}
+
+	for (i = 1; i < limits->num_current; i++) {
+		cur = limits->max_currents[i];
+		time = limits->time_for_currents[i];
+		for (j = i; j > 0 && limits->time_for_currents[j - 1] > time; j--) {
+			limits->time_for_currents[j] =
+				limits->time_for_currents[j - 1];
+			limits->max_currents[j] = limits->max_currents[j - 1];
+		}
+		limits->time_for_currents[j] = time;
+		limits->max_currents[j] = cur;
+	}
+
+	if (limits->num_current)
+		limits->always_on_max_current =
+			limits->max_currents[limits->num_current - 1];
+}
+
+static void qti_flash_parse_limits(struct flash_node_data *fnode,
+				   struct device_node *node)
+{
+	struct current_limits *limits = &fnode->current_limits;
+	int rc, count;
+	u32 val;
+
+	fnode->max_duration = SAFETY_TIMER_MAX_TIMEOUT_MS;
+
+	if (fnode->type == FLASH_LED_TYPE_FLASH) {
+		rc = of_property_read_u32(node, "xiaomi,max-duration-ms", &val);
+		if (!rc && val >= SAFETY_TIMER_MIN_TIMEOUT_MS &&
+		    val <= SAFETY_TIMER_MAX_TIMEOUT_MS)
+			fnode->max_duration = val;
+		return;
+	}
+
+	count = of_property_count_u32_elems(node, "xiaomi,currents-with-time");
+	if (count <= 0)
+		return;
+
+	if (count > MAX_CURRENT_LIMIT_LEVELS) {
+		pr_warn("flash led custom max current only can load %d number\n",
+			MAX_CURRENT_LIMIT_LEVELS);
+		count = MAX_CURRENT_LIMIT_LEVELS;
+	}
+
+	rc = of_property_read_u32_array(node, "xiaomi,currents-with-time",
+					limits->max_currents, count);
+	if (rc) {
+		pr_err("%s: flash led load currents-with-time error:%d\n",
+			__func__, rc);
+		return;
+	}
+
+	rc = of_property_read_u32_array(node, "xiaomi,time-for-currents",
+					limits->time_for_currents, count);
+	if (rc) {
+		pr_err("%s: flash led load time-for-currents error:%d\n",
+			__func__, rc);
+		return;
+	}
+
+	limits->num_current = count;
+	qti_flash_sanitize_current_limits(fnode);
+}
+
 static int register_flash_device(struct qti_flash_led *led,
 			struct flash_node_data *fnode, struct device_node *node)
 {
@@ -1638,10 +1775,12 @@ static int register_flash_device(struct qti_flash_led *led,
 	fnode->max_current = val;
 	fnode->fdev.led_cdev.max_brightness = val;
 
+	qti_flash_parse_limits(fnode, node);
+
 	duration = SAFETY_TIMER_DEFAULT_TIMEOUT_MS;
 	rc = of_property_read_u32(node, "qcom,duration-ms", &val);
 	if (!rc && (val >= SAFETY_TIMER_MIN_TIMEOUT_MS &&
-			val <= SAFETY_TIMER_MAX_TIMEOUT_MS))
+			val <= fnode->max_duration))
 		duration = val;
 
 	rc = timeout_to_code(duration);
@@ -1689,7 +1828,7 @@ static int register_flash_device(struct qti_flash_led *led,
 
 	setting = &fnode->fdev.timeout;
 	setting->min = 0;
-	setting->max = SAFETY_TIMER_MAX_TIMEOUT_MS * 1000;
+	setting->max = fnode->max_duration * 1000;
 	setting->step = SAFETY_TIMER_STEP_SIZE * 1000;
 	setting->val = SAFETY_TIMER_DEFAULT_TIMEOUT_MS * 1000;
 
