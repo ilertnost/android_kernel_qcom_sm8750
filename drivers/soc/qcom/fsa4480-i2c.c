@@ -15,6 +15,7 @@
 
 #define FSA4480_I2C_NAME	"fsa4480-driver"
 
+#define FSA4480_DEVICE_ID       0x00
 #define FSA4480_SWITCH_SETTINGS 0x04
 #define FSA4480_SWITCH_CONTROL  0x05
 #define FSA4480_SWITCH_STATUS1  0x07
@@ -28,6 +29,11 @@
 #define FSA4480_DELAY_L_SENSE   0x0F
 #define FSA4480_DELAY_L_AGND    0x10
 #define FSA4480_RESET           0x1E
+
+/* DIO4485, a second source with a few extra registers */
+#define DIO4485_DEVICE_ID		0xF6
+#define DIO4485_FUNCTION_ENABLE		0x12
+#define DIO4485_TIMING_DELAY_SETTING	0x21
 
 struct fsa4480_priv {
 	struct regmap *regmap;
@@ -47,7 +53,7 @@ struct fsa4480_reg_val {
 static const struct regmap_config fsa4480_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.max_register = FSA4480_RESET,
+	.max_register = DIO4485_TIMING_DELAY_SETTING,
 };
 
 static const struct fsa4480_reg_val fsa_reg_i2c_defaults[] = {
@@ -60,6 +66,16 @@ static const struct fsa4480_reg_val fsa_reg_i2c_defaults[] = {
 	{FSA4480_DELAY_L_MIC, 0x00},
 	{FSA4480_DELAY_L_SENSE, 0x00},
 	{FSA4480_DELAY_L_AGND, 0x09},
+	{FSA4480_SWITCH_SETTINGS, 0x98},
+};
+
+static const struct fsa4480_reg_val dio4485_reg_i2c_defaults[] = {
+	{FSA4480_DELAY_L_SENSE, 0x00},
+	{FSA4480_DELAY_L_AGND, 0x00},
+	{FSA4480_DELAY_L_MIC, 0x0B},
+	{FSA4480_DELAY_L_R, 0x0F},
+	{DIO4485_TIMING_DELAY_SETTING, 0x0F},
+	{DIO4485_FUNCTION_ENABLE, 0x08},
 	{FSA4480_SWITCH_SETTINGS, 0x98},
 };
 
@@ -322,11 +338,22 @@ static void fsa4480_usbc_analog_work_fn(struct work_struct *work)
 
 static void fsa4480_update_reg_defaults(struct regmap *regmap)
 {
-	u8 i;
+	const struct fsa4480_reg_val *defaults = fsa_reg_i2c_defaults;
+	size_t count = ARRAY_SIZE(fsa_reg_i2c_defaults);
+	unsigned int dev_id = 0;
+	size_t i;
 
-	for (i = 0; i < ARRAY_SIZE(fsa_reg_i2c_defaults); i++)
-		regmap_write(regmap, fsa_reg_i2c_defaults[i].reg,
-				   fsa_reg_i2c_defaults[i].val);
+	regmap_read(regmap, FSA4480_DEVICE_ID, &dev_id);
+	if (dev_id == DIO4485_DEVICE_ID) {
+		pr_info("%s: audioswitch type is dio4485\n", __func__);
+		defaults = dio4485_reg_i2c_defaults;
+		count = ARRAY_SIZE(dio4485_reg_i2c_defaults);
+	} else {
+		pr_info("%s: audioswitch type is default\n", __func__);
+	}
+
+	for (i = 0; i < count; i++)
+		regmap_write(regmap, defaults[i].reg, defaults[i].val);
 }
 
 static int fsa4480_probe(struct i2c_client *i2c)
