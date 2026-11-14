@@ -315,7 +315,7 @@ static void mitee_msgq_send(struct mitee_msgq_dev *qdev,
 {
 	int rc;
 
-	rc = gh_msgq_send(qdev->msgq, msg, size, GH_MSGQ_TX_PUSH);
+	rc = gh_msgq_send(qdev->msgq, msg, size, 0);
 	if (rc)
 		dev_err(qdev->dev, "mitee msgq: send failed: %d\n", rc);
 }
@@ -354,8 +354,11 @@ static void mitee_msgq_handle_control(struct mitee_msgq_dev *qdev,
 		msg->regs[4] = qdev->label;
 		mitee_msgq_send(qdev, msg, sizeof(*msg));
 
-		/* Give the VM time to accept the static memory first */
-		msleep(20);
+		/*
+		 * Give the VM time to accept the static memory before the
+		 * request queue is shared too; stock busy-waits 5 ms here.
+		 */
+		usleep_range(5000, 5500);
 
 		if (!qdev->queue_shared) {
 			if (mitee_msgq_share_mem_contiguous(qdev,

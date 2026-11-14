@@ -396,7 +396,7 @@ static int tui_send_font(struct mitee_tui *tui, u64 *value, void *buf,
 		if (!shm) {
 			pr_err("failed to get data by anonid, err=%u\n",
 			       tui->user_rsp.font_shm_id);
-			return TEEC_ERROR_BAD_PARAMETERS;
+			return -EINVAL;
 		}
 	}
 
@@ -514,7 +514,8 @@ static long tui_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case TUI_IO_FREE_BUF:
 		break;
 	case TUI_IO_SIGNAL:
-		if (tui->token <= 0)
+		/* Reconnect if the channel was never opened or failed */
+		if (tui->token == 0 || tui->token == -1)
 			tui->token = mitee_smc_notify_connect(0, TUI_NOTIFY_ID);
 		pr_info("mitee_tui check connect token: %x\n", tui->token);
 		if (mitee_smc_notify_signal(0, tui->token, TUI_NOTIFY_SIGNAL))

@@ -37,7 +37,7 @@ static u64 mitee_notify_arg(u8 type, u32 id, u8 op, u16 len)
  * @type:	notification type
  * @id:		id of the service in the TEE
  *
- * Returns the token of the channel, or a negative value on failure.
+ * Returns the token of the channel, or -1 on failure.
  */
 int mitee_smc_notify_connect(u8 type, u32 id)
 {
@@ -47,9 +47,8 @@ int mitee_smc_notify_connect(u8 type, u32 id)
 	};
 	int rc;
 
-	rc = mitee_msgq_call(&regs);
-	if (!rc)
-		rc = (int)regs.a0;
+	/* Like stock, any transport failure is reported as -1 */
+	rc = mitee_msgq_call(&regs) ? -1 : (int)regs.a0;
 	if (rc == -1)
 		pr_err("mitee smc notify connect failed\n");
 
@@ -72,7 +71,7 @@ int mitee_smc_notify_signal(u8 type, u32 token, u8 signal)
 	};
 	int rc;
 
-	rc = mitee_msgq_call(&regs);
+	rc = mitee_msgq_call(&regs) ? -1 : 0;
 	if (rc)
 		pr_err("mitee smc signal failed\n");
 
