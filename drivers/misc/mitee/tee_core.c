@@ -282,7 +282,7 @@ static int tee_ioctl_version(struct tee_context *ctx,
 /*
  * Xiaomi's TEE client library asks for a buffer that is not taken from the
  * static shared memory pool by passing this magic ("mem") in the flags field
- * of TEE_IOC_SHM_ALLOC. Such a buffer is vmalloc()ed by the driver and
+ * of TEE_IOC_SHM_ALLOC. Such a buffer is vzalloc()ed by the driver and
  * registered with the TEE as dynamic shared memory.
  */
 #define TEE_SHM_ALLOC_FLAG_DYNAMIC	0x6d656d
@@ -298,7 +298,7 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 		return -EFAULT;
 
 	if (data.flags == TEE_SHM_ALLOC_FLAG_DYNAMIC) {
-		void *buf = vmalloc(data.size);
+		void *buf = vzalloc(data.size);
 
 		if (!buf) {
 			pr_err("vmalloc failed\n");
