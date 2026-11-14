@@ -131,6 +131,11 @@ static int mi_thermal_add_cpu(unsigned int cpu)
 		return -ENODEV;
 	}
 
+	if (!policy->freq_table) {
+		ret = -EINVAL;
+		goto put_policy;
+	}
+
 	cpufreq_for_each_valid_entry(pos, policy->freq_table)
 		count++;
 	if (!count) {
