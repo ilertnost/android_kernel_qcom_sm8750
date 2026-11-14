@@ -236,6 +236,20 @@ static void mi_thermal_set_cpu_limit(unsigned int cpu, unsigned int max_freq)
 	mutex_unlock(&cpu_list_lock);
 }
 
+/*
+ * Integers written by userspace are decimal. Like the original interface,
+ * every write is accepted and anything that does not parse reads as 0.
+ */
+static int mi_thermal_parse_int(const char *buf)
+{
+	int val;
+
+	if (kstrtoint(buf, 10, &val))
+		return 0;
+
+	return val;
+}
+
 static ssize_t cpu_limits_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
@@ -268,11 +282,7 @@ static ssize_t sconfig_show(struct device *dev, struct device_attribute *attr,
 static ssize_t sconfig_store(struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
-	int val, ret;
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
+	int val = mi_thermal_parse_int(buf);
 
 	WRITE_ONCE(sconfig, val);
 #if IS_ENABLED(CONFIG_MI_THERMAL_INTERFACE_MCA)
@@ -348,13 +358,11 @@ static ssize_t board_sensor_temp_store(struct device *dev,
 				       struct device_attribute *attr,
 				       const char *buf, size_t count)
 {
-	int temp;
+	int temp = mi_thermal_parse_int(buf);
 
 	mi_thermal_str_store(dev, attr, buf, count);
 
 	/* Forward the board temperature to the charging stack */
-	if (kstrtoint(buf, 10, &temp))
-		return count;
 #if IS_ENABLED(CONFIG_MI_THERMAL_INTERFACE_MCA)
 	mca_event_block_notify(MCA_EVENT_TYPE_THERMAL, MCA_EVENT_BOARD_TEMP,
 			       &temp);
@@ -368,8 +376,33 @@ static struct mi_thermal_str_attr dev_attr_board_sensor_temp = {
 		       board_sensor_temp_store),
 };
 
+static ssize_t mi_thermal_int_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct dev_ext_attribute *ea = container_of(attr,
+					struct dev_ext_attribute, attr);
+
+	return sysfs_emit(buf, "%d\n", READ_ONCE(*(int *)ea->var));
+}
+
+static ssize_t mi_thermal_int_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct dev_ext_attribute *ea = container_of(attr,
+					struct dev_ext_attribute, attr);
+
+	WRITE_ONCE(*(int *)ea->var, mi_thermal_parse_int(buf));
+
+	return count;
+}
+
 #define MI_THERMAL_INT_ATTR(_name, _var)				\
-	static DEVICE_INT_ATTR(_name, 0664, _var)
+	static struct dev_ext_attribute dev_attr_##_name = {		\
+		.attr = __ATTR(_name, 0664, mi_thermal_int_show,	\
+			       mi_thermal_int_store),			\
+		.var = &(_var),						\
+	}
 
 MI_THERMAL_INT_ATTR(temp_state, temp_state);
 MI_THERMAL_INT_ATTR(balance_mode, balance_mode);
