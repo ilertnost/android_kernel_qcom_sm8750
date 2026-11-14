@@ -101,7 +101,7 @@ static const struct regmap_bus mca_platform_base_regmap_bus = {
 static const struct regmap_config mca_platform_base_regmap_config = {
 	.reg_bits		= 16,
 	.val_bits		= 8,
-	.val_format_endian	= REGMAP_ENDIAN_BIG,
+	.reg_format_endian	= REGMAP_ENDIAN_BIG,
 };
 
 static int mca_platform_base_parse_dt(struct mca_platform_base *base)
