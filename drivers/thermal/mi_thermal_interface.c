@@ -48,6 +48,7 @@ void mca_event_block_notify(int type, unsigned long event, void *data);
 
 struct mi_thermal_cpu {
 	struct list_head node;
+	/* CPU owning the cpufreq policy, as matched by cpu_limits */
 	unsigned int cpu;
 	/* Distinct frequencies of the CPU, highest first */
 	unsigned int *freqs;
@@ -169,7 +170,7 @@ static int mi_thermal_add_cpu(unsigned int cpu)
 		tcpu->freqs[count++] = tcpu->freqs[i];
 	}
 
-	tcpu->cpu = cpu;
+	tcpu->cpu = policy->cpu;
 	tcpu->num_freqs = count;
 	tcpu->policy = policy;
 
