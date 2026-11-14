@@ -1730,6 +1730,43 @@ static int smart_charge_parse_dt(struct smart_charge_info *info)
 	return 0;
 }
 
+static void smart_charge_destroy_voter(struct smart_charge_info *info)
+{
+	struct mca_votable **voters[] = {
+		&info->smartchg_delta_fv_voter,
+		&info->smartchg_delta_ichg_voter,
+		&info->smartchg_set_fcc_voter,
+	};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(voters); i++) {
+		if (!IS_ERR_OR_NULL(*voters[i]))
+			mca_destroy_votable(*voters[i]);
+		*voters[i] = NULL;
+	}
+}
+
+/*
+ * Withdraw everything that points at the devm-allocated info: the strategy
+ * registration, the notifiers, the works, the votables whose callbacks take
+ * info as their data, the sysfs group and the exported accessors' pointer.
+ */
+static void smart_charge_unregister(struct smart_charge_info *info)
+{
+	mca_strategy_ops_register(STRATEGY_FUNC_TYPE_SMARTCHG, NULL, NULL, NULL,
+				  NULL);
+	mca_event_block_notify_unregister(MCA_EVENT_TYPE_PANEL,
+					  &info->panel_nb);
+	mca_event_block_notify_unregister(MCA_EVENT_TYPE_THERMAL_TEMP,
+					  &info->thermal_nb);
+	cancel_delayed_work_sync(&info->smart_charge_work);
+	cancel_delayed_work_sync(&info->smart_sense_chg_work);
+	cancel_delayed_work_sync(&info->smart_soc_limit_work);
+	smart_charge_destroy_voter(info);
+	smart_charge_sysfs_remove_group(info->dev);
+	global_smartchg_info = NULL;
+}
+
 static int smart_charge_probe(struct platform_device *pdev)
 {
 	struct smart_charge_info *info;
@@ -1747,34 +1784,36 @@ static int smart_charge_probe(struct platform_device *pdev)
 	info->dev = &pdev->dev;
 	mutex_init(&info->mmap_lock);
 	global_smartchg_info = info;
+	INIT_DELAYED_WORK(&info->smart_charge_work, smart_charge_workfunc);
+	INIT_DELAYED_WORK(&info->smart_sense_chg_work,
+			  smart_charge_sense_chg_workfunc);
+	INIT_DELAYED_WORK(&info->smart_soc_limit_work,
+			  smart_charge_soc_limit_workfunc);
+	info->panel_nb.notifier_call = smart_charge_panel_notifier_cb;
+	info->thermal_nb.notifier_call = smart_charge_thermal_notifier_cb;
+
 	ret = smart_charge_parse_dt(info);
 	if (ret) {
 		mca_log_err("parse dt failed\n");
+		global_smartchg_info = NULL;
 		return -1;
 	}
 	smart_charge_sysfs_create_group(info->dev);
 	ret = smart_charge_init_voter(info);
 	if (ret) {
 		mca_log_err("init voter err\n");
+		smart_charge_destroy_voter(info);
+		smart_charge_sysfs_remove_group(info->dev);
+		global_smartchg_info = NULL;
 		return -1;
 	}
 
 	mca_strategy_ops_register(STRATEGY_FUNC_TYPE_SMARTCHG,
 				  mca_smart_charge_process_event, NULL, NULL,
 				  info);
-
-	info->panel_nb.notifier_call = smart_charge_panel_notifier_cb;
 	mca_event_block_notify_register(MCA_EVENT_TYPE_PANEL, &info->panel_nb);
-
-	info->thermal_nb.notifier_call = smart_charge_thermal_notifier_cb;
 	mca_event_block_notify_register(MCA_EVENT_TYPE_THERMAL_TEMP,
 					&info->thermal_nb);
-
-	INIT_DELAYED_WORK(&info->smart_charge_work, smart_charge_workfunc);
-	INIT_DELAYED_WORK(&info->smart_sense_chg_work,
-			  smart_charge_sense_chg_workfunc);
-	INIT_DELAYED_WORK(&info->smart_soc_limit_work,
-			  smart_charge_soc_limit_workfunc);
 
 	mca_strategy_func_get_status(STRATEGY_FUNC_TYPE_BUCK_CHARGE,
 				     STRATEGY_STATUS_TYPE_ONLINE, &online);
@@ -1785,6 +1824,7 @@ static int smart_charge_probe(struct platform_device *pdev)
 	ret = alloc_chrdev_region(&info->dev_num, 0, 1, "smart_charge");
 	if (ret) {
 		mca_log_err("alloc chrdev num failed\n");
+		smart_charge_unregister(info);
 		return ret;
 	}
 
@@ -1825,6 +1865,7 @@ err_cdev_del:
 	cdev_del(&info->pri_dev);
 err_unregister_region:
 	unregister_chrdev_region(info->dev_num, 1);
+	smart_charge_unregister(info);
 
 	return -1;
 }
@@ -1837,14 +1878,7 @@ static int smart_charge_remove(struct platform_device *pdev)
 	cdev_del(&info->pri_dev);
 	device_destroy(info->smart_charge_class, info->dev_num);
 	class_destroy(info->smart_charge_class);
-	smart_charge_sysfs_remove_group(&pdev->dev);
-	mca_event_block_notify_unregister(MCA_EVENT_TYPE_PANEL,
-					  &info->panel_nb);
-	mca_event_block_notify_unregister(MCA_EVENT_TYPE_THERMAL_TEMP,
-					  &info->thermal_nb);
-	cancel_delayed_work_sync(&info->smart_charge_work);
-	cancel_delayed_work_sync(&info->smart_sense_chg_work);
-	cancel_delayed_work_sync(&info->smart_soc_limit_work);
+	smart_charge_unregister(info);
 
 	return 0;
 }
