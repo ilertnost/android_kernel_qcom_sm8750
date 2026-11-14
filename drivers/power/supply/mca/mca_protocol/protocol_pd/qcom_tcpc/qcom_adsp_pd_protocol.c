@@ -87,8 +87,8 @@ static int adsp_pd_write_bool(u32 prop, bool val)
 static int adsp_pd_protocol_get_pps_max_power(u32 *max_power, void *data)
 {
 	/*
-	 * The firmware answers this one in place: the buffer handed over is
-	 * filled in by the reply rather than by a separate read.
+	 * This is a write of the current value: only the return code says
+	 * how the firmware took it, and *max_power is not updated.
 	 */
 	return mca_adsp_glink_write_prop(ADSP_PROP_ID_TYPEC_PPS_POWER_MAX,
 					 max_power, sizeof(*max_power));
