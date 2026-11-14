@@ -568,7 +568,7 @@ static int mca_wireless_quick_get_parallel_volt_para(struct mca_wireless_quick_c
 static int mca_wireless_quick_charger_get_base_limit_cur(struct mca_wireless_quick_charge_info *info, int cur_max)
 {
 	struct mca_wireless_quick_charge_process_data *proc_data = &(info->proc_data);
-	int cur_stage = proc_data->cur_stage[FG_IC_BASE];
+	int cur_stage = proc_data->parall_cur_stage[FG_IC_BASE];
 	int ibat = info->proc_data.parall_ibat[FG_IC_BASE];
 	int base_cur_max;
 	int final_curr = cur_max;
