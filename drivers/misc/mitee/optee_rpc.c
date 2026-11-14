@@ -456,9 +456,6 @@ static int optee_msg_arg_to_callback_para(struct optee_msg_arg *arg,
 	void *va;
 	int rc;
 
-	if (arg->num_params < 3)
-		return -EINVAL;
-
 	*value = NULL;
 	*buf = NULL;
 	*size = 0;
@@ -502,10 +499,13 @@ static void handle_rpc_cmd_callback(struct mitee *mitee,
 	u32 size;
 	int rc;
 
-	if (!arg->num_params) {
-		arg->ret = TEEC_ERROR_BAD_PARAMETERS;
-		return;
-	}
+	/*
+	 * Like stock, read params[0..2] whatever num_params says: the TEE
+	 * may leave out trailing parameters it does not use, and the RPC
+	 * argument always comes from a full MITEE_MSG_DATA_SIZE message
+	 * buffer, which covers them.
+	 */
+	BUILD_BUG_ON(OPTEE_MSG_GET_ARG_SIZE(3) > MITEE_MSG_DATA_SIZE);
 
 	cmd = arg->params[0].u.value.a;
 	client = arg->params[0].u.value.b;
