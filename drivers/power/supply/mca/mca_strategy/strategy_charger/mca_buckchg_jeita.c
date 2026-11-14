@@ -204,7 +204,11 @@ static bool jeita_step_apply(const struct mca_buckchg_jeita_data *row,
 	if (curr < last_curr) {
 		if (volt_index < 0)
 			return false;
-		/* The first step has none below it to compare against. */
+		/*
+		 * The first step has none below it to compare against.  Stock
+		 * reads the entry before the array here; the lower current is
+		 * applied instead, which is the conservative choice.
+		 */
 		if (volt_index > 0 && vbat <= steps[volt_index - 1].voltage)
 			return false;
 		mca_log_info("vbat_thre[s->l]: max_chg_curr:%d, last_chg_curr:%d, vbat_index:%d\n",
