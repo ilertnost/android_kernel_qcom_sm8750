@@ -1578,20 +1578,35 @@ static long smart_charge_ioctl(struct file *file, unsigned int cmd,
 {
 	struct smart_charge_info *info = file->private_data;
 	unsigned long ret;
+	void *buf;
 
 	if (cmd != SMARTCHG_DATA_CMD) {
 		mca_log_err("invalid cmd\n");
 		return -EINVAL;
 	}
 
+	/*
+	 * Copy through a bounce page: faulting in user memory with mmap_lock
+	 * held would invert the order smart_charge_mmap() takes it in, under
+	 * the caller's mm lock.  copy_from_user() zeroes whatever it could not
+	 * copy, so the shared buffer gets the same contents either way.
+	 */
+	buf = (void *)__get_free_page(GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	ret = copy_from_user(buf, (void __user *)arg, PAGE_SIZE);
+
 	mutex_lock(&info->mmap_lock);
 	if (!info->mmap_addr) {
 		mutex_unlock(&info->mmap_lock);
+		free_page((unsigned long)buf);
 		mca_log_err("mmap addr is null\n");
 		return -EINVAL;
 	}
-	ret = copy_from_user(info->mmap_addr, (void __user *)arg, PAGE_SIZE);
+	memcpy(info->mmap_addr, buf, PAGE_SIZE);
 	mutex_unlock(&info->mmap_lock);
+	free_page((unsigned long)buf);
 
 	mca_log_info("data ret = %lu\n", ret);
 	return ret ? -EINVAL : 0;
