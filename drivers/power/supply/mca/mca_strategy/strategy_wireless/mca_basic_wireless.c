@@ -3199,7 +3199,7 @@ static void strategy_wireless_enable_fast_charge_mode(struct strategy_wireless_d
 	 * quick charge has stayed done for a while.
 	 */
 	if (quick_charge_status != MCA_QUICK_CHG_STS_CHARGING &&
-	    ffc_iterm >= WLS_FFC_ITERM_LOW_MA && !info->support_base_flip) {
+	    ffc_iterm > WLS_FFC_ITERM_LOW_MA && !info->support_base_flip) {
 		if (!fastcharge_mode) {
 			charge_done_cnt = 0;
 			mca_log_info("quick_charge_status is %d, keep normal mode\n",
