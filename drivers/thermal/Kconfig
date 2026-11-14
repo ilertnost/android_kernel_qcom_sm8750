@@ -484,6 +484,7 @@ config MI_THERMAL_INTERFACE
 config MI_THERMAL_INTERFACE_MCA
 	bool "Forward the thermal scene to the MCA charging stack"
 	depends on MI_THERMAL_INTERFACE
+	depends on XM_POWER_SUPPLY=y || (XM_POWER_SUPPLY=m && MI_THERMAL_INTERFACE=m)
 	help
 	  Pass the thermal scene (sconfig) and the board temperature written
 	  by the thermal daemon on to Xiaomi's MCA charging stack, which has
