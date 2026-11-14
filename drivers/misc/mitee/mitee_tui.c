@@ -125,11 +125,11 @@ struct mitee_tui {
 	bool event_active;
 	wait_queue_head_t event_queue;
 
-	/* font being sent to the TEE */
+	/* font being sent to the TEE, holds a reference */
 	struct tui_shm *font;
 	size_t font_size;
 
-	struct mutex shm_mutex;		/* protects @shm_idr */
+	struct mutex shm_mutex;		/* protects @shm_idr and @font */
 	struct idr shm_idr;
 };
 
@@ -146,6 +146,15 @@ static void tui_shm_release(struct kref *ref)
 	kfree(shm);
 }
 
+static void tui_shm_put(struct tui_shm *shm)
+{
+	kref_put(&shm->ref, tui_shm_release);
+}
+
+/*
+ * Returns a new buffer holding two references: one owned by the id table
+ * and one for the caller, to be dropped with tui_shm_put().
+ */
 static struct tui_shm *tui_shm_alloc(struct mitee_tui *tui, size_t size)
 {
 	struct tui_shm *shm;
@@ -164,6 +173,7 @@ static struct tui_shm *tui_shm_alloc(struct mitee_tui *tui, size_t size)
 		return ERR_PTR(-ENOMEM);
 	}
 
+	kref_get(&shm->ref);
 	mutex_lock(&tui->shm_mutex);
 	shm->id = idr_alloc(&tui->shm_idr, shm, 1, 0, GFP_KERNEL);
 	mutex_unlock(&tui->shm_mutex);
@@ -177,27 +187,35 @@ static struct tui_shm *tui_shm_alloc(struct mitee_tui *tui, size_t size)
 	return shm;
 }
 
-/* Drop the buffer from the id table, mappings keep it alive */
-static void tui_shm_free(struct mitee_tui *tui, struct tui_shm *shm)
-{
-	pr_info("free shm, name=%s\n", shm->name);
-	mutex_lock(&tui->shm_mutex);
-	idr_remove(&tui->shm_idr, shm->id);
-	mutex_unlock(&tui->shm_mutex);
-	kref_put(&shm->ref, tui_shm_release);
-}
-
-static struct tui_shm *tui_shm_get_data_byid(struct mitee_tui *tui, int id)
+/*
+ * Drop the buffer from the id table along with the table's reference;
+ * open file descriptors and a font transfer keep it alive. Only the
+ * caller that actually removed the id drops that reference.
+ */
+static int tui_shm_free_id(struct mitee_tui *tui, int id)
 {
 	struct tui_shm *shm;
 
 	mutex_lock(&tui->shm_mutex);
-	shm = idr_find(&tui->shm_idr, id);
+	shm = idr_remove(&tui->shm_idr, id);
 	mutex_unlock(&tui->shm_mutex);
 	if (!shm)
-		pr_err("failed to get data by anonid, err=%d\n", id);
+		return -EINVAL;
 
-	return shm;
+	pr_info("free shm, name=%s\n", shm->name);
+	tui_shm_put(shm);
+	return 0;
+}
+
+/* Drop the font of a finished or aborted transfer, @shm_mutex held */
+static void tui_font_drop_locked(struct mitee_tui *tui)
+{
+	if (!tui->font)
+		return;
+
+	tui_shm_put(tui->font);
+	tui->font = NULL;
+	tui->font_size = 0;
 }
 
 static int tui_shm_fop_mmap(struct file *filp, struct vm_area_struct *vma)
@@ -221,7 +239,7 @@ static int tui_shm_fop_release(struct inode *inode, struct file *filp)
 {
 	struct tui_shm *shm = filp->private_data;
 
-	kref_put(&shm->ref, tui_shm_release);
+	tui_shm_put(shm);
 	return 0;
 }
 
@@ -243,7 +261,7 @@ static int tui_shm_create_fd(struct tui_shm *shm, const char *name)
 	fd = anon_inode_getfd(shm->name, &tui_shm_fops, shm, O_RDWR);
 	if (fd < 0) {
 		pr_err("failed to create anon fd, err=%d\n", fd);
-		kref_put(&shm->ref, tui_shm_release);
+		tui_shm_put(shm);
 		return -ENOMEM;
 	}
 
@@ -275,6 +293,7 @@ static int tui_ioctl_shm_alloc(struct mitee_tui *tui, void __user *uarg)
 	arg.flags = TUI_SHM_FLAG_MAPPED;
 	arg.id = shm->id;
 	arg.fd = tui_shm_create_fd(shm, arg.name);
+	tui_shm_put(shm);
 
 	if (copy_to_user(uarg, &arg, sizeof(arg))) {
 		pr_err("failed to copy_to_user\n");
@@ -287,7 +306,6 @@ static int tui_ioctl_shm_alloc(struct mitee_tui *tui, void __user *uarg)
 static int tui_ioctl_shm_free(struct mitee_tui *tui, void __user *uarg)
 {
 	struct tui_shm_arg arg;
-	struct tui_shm *shm;
 
 	if (copy_from_user(&arg, uarg, sizeof(arg))) {
 		pr_err("failed to copy_from_user\n");
@@ -299,13 +317,17 @@ static int tui_ioctl_shm_free(struct mitee_tui *tui, void __user *uarg)
 		return -EINVAL;
 	}
 
-	shm = tui_shm_get_data_byid(tui, arg.id);
-	if (!shm)
-		return -EINVAL;
+	/* Freeing the font buffer aborts a transfer in progress */
+	mutex_lock(&tui->shm_mutex);
+	if (tui->font && tui->font->id == arg.id)
+		tui_font_drop_locked(tui);
+	mutex_unlock(&tui->shm_mutex);
 
-	if (shm == tui->font)
-		tui->font = NULL;
-	tui_shm_free(tui, shm);
+	if (tui_shm_free_id(tui, arg.id)) {
+		pr_err("failed to get data by anonid, err=%u\n", arg.id);
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -350,6 +372,7 @@ static int tui_send_font(struct mitee_tui *tui, u64 *value, void *buf,
 {
 	size_t len = value[1];
 	size_t offs = value[2];
+	struct tui_shm *shm;
 	u32 ret;
 
 	if (!offs) {
@@ -359,16 +382,28 @@ static int tui_send_font(struct mitee_tui *tui, u64 *value, void *buf,
 			return ret;
 		}
 
-		tui->font = tui_shm_get_data_byid(tui,
-						  tui->user_rsp.font_shm_id);
-		if (!tui->font)
+		mutex_lock(&tui->shm_mutex);
+		tui_font_drop_locked(tui);
+		shm = idr_find(&tui->shm_idr, tui->user_rsp.font_shm_id);
+		if (shm) {
+			kref_get(&shm->ref);
+			tui->font = shm;
+			tui->font_size = min_t(size_t, tui->user_rsp.font_size,
+					       shm->size);
+		}
+		mutex_unlock(&tui->shm_mutex);
+		if (!shm) {
+			pr_err("failed to get data by anonid, err=%u\n",
+			       tui->user_rsp.font_shm_id);
 			return TEEC_ERROR_BAD_PARAMETERS;
-		tui->font_size = min_t(size_t, tui->user_rsp.font_size,
-				       tui->font->size);
+		}
 	}
 
-	if (!tui->font || offs > tui->font_size || !buf)
+	mutex_lock(&tui->shm_mutex);
+	if (!tui->font || offs > tui->font_size || !buf) {
+		mutex_unlock(&tui->shm_mutex);
 		return TEEC_ERROR_BAD_PARAMETERS;
+	}
 
 	len = min3(len, size, tui->font_size - offs);
 	memcpy(buf, tui->font->vaddr + offs, len);
@@ -376,11 +411,16 @@ static int tui_send_font(struct mitee_tui *tui, u64 *value, void *buf,
 	value[1] = offs ? len : tui->font_size;
 	*out_size = len;
 
+	/* The whole font was sent: free its buffer, as stock does */
 	if (offs + len >= tui->font_size) {
-		tui_shm_free(tui, tui->font);
-		tui->font = NULL;
-		tui->font_size = 0;
+		shm = tui->font;
+		if (idr_find(&tui->shm_idr, shm->id) == shm) {
+			idr_remove(&tui->shm_idr, shm->id);
+			tui_shm_put(shm);
+		}
+		tui_font_drop_locked(tui);
 	}
+	mutex_unlock(&tui->shm_mutex);
 
 	return TUI_RET_OK;
 }
@@ -640,8 +680,9 @@ void mitee_tui_exit(void)
 	tui_remove_device(tui->supp_devt, &tui->supp_cdev, tui->supp_class);
 	tui_remove_device(tui->devt, &tui->cdev, tui->class);
 
+	tui_font_drop_locked(tui);
 	idr_for_each_entry(&tui->shm_idr, shm, id)
-		kref_put(&shm->ref, tui_shm_release);
+		tui_shm_put(shm);
 	idr_destroy(&tui->shm_idr);
 	mitee_tui = NULL;
 	kfree(tui);
