@@ -57,6 +57,7 @@
 #define FG_CURR_HIGH_TH			6000
 #define FG_RM_FCC_HIGH_TH		8000
 #define FG_RM_FCC_DEFAULT		2500000
+#define FG_RM_ZERO_READ_KEEP_TH		2500999
 
 #define FG_TERM_CURRENT			1500
 
@@ -552,7 +553,8 @@ static int fg_convert_bytes_to_rm(struct bq_fg_chip *bq, u16 raw)
 		rm = bq->batt_rm;
 	}
 
-	if (!raw && bq->batt_rm >= FG_RM_FCC_DEFAULT)
+	/* a zero read is a glitch while the last capacity was above 2.5 Ah */
+	if (!raw && bq->batt_rm > FG_RM_ZERO_READ_KEEP_TH)
 		rm = bq->batt_rm;
 
 	bq->batt_rm = rm;
