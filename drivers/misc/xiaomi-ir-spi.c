@@ -44,7 +44,8 @@ static int ir_spi_reserve_buffer(struct ir_spi_data *idata, size_t length)
 	if (length <= idata->buffer_size)
 		return 0;
 
-	buffer = kmalloc(length, GFP_KERNEL | GFP_DMA);
+	/* The size comes from userspace, fail quietly when it is too large */
+	buffer = kmalloc(length, GFP_KERNEL | GFP_DMA | __GFP_NOWARN);
 	if (!buffer)
 		return -ENOMEM;
 
