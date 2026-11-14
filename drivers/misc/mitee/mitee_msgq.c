@@ -31,6 +31,7 @@
 #include <linux/rhashtable.h>
 #include <linux/scatterlist.h>
 #include <linux/sched/signal.h>
+#include <linux/sched/task.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/sizes.h>
@@ -453,8 +454,12 @@ static int mitee_msgq_recv_task(void *data)
 		return -ENOMEM;
 	}
 
-	/* Let mitee_msgq_remove() interrupt the blocking receive */
-	allow_signal(SIGKILL);
+	/*
+	 * Let mitee_msgq_stop_recv_task() interrupt the blocking receive.
+	 * Only kernel-sent signals are let through, so user space can not
+	 * kill the thread and cut off every TEE reply.
+	 */
+	allow_kernel_signal(SIGKILL);
 
 	while (!kthread_should_stop()) {
 		memset(msg, 0, GH_MSGQ_MAX_MSG_SIZE_BYTES);
@@ -1199,6 +1204,19 @@ static int mitee_msgq_rm_cb(struct notifier_block *nb, unsigned long cmd,
 	return NOTIFY_DONE;
 }
 
+static void mitee_msgq_stop_recv_task(struct task_struct *task)
+{
+	/*
+	 * The thread returns as soon as the signal interrupts its receive,
+	 * and kthreads are reaped on exit: keep the task around until
+	 * kthread_stop() is done with it.
+	 */
+	get_task_struct(task);
+	send_sig(SIGKILL, task, 1);
+	kthread_stop(task);
+	put_task_struct(task);
+}
+
 static int mitee_msgq_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1288,8 +1306,7 @@ static int mitee_msgq_probe(struct platform_device *pdev)
 	return 0;
 
 err_stop_task:
-	send_sig(SIGKILL, qdev->recv_task, 1);
-	kthread_stop(qdev->recv_task);
+	mitee_msgq_stop_recv_task(qdev->recv_task);
 err_unregister_msgq:
 	gh_msgq_unregister(qdev->msgq);
 err_destroy_table:
@@ -1313,8 +1330,7 @@ static int mitee_msgq_remove(struct platform_device *pdev)
 	gh_rm_unregister_notifier(&qdev->rm_nb);
 	mitee_qdev = NULL;
 
-	send_sig(SIGKILL, qdev->recv_task, 1);
-	kthread_stop(qdev->recv_task);
+	mitee_msgq_stop_recv_task(qdev->recv_task);
 	gh_msgq_unregister(qdev->msgq);
 
 	if (qdev->vm_state != MITEE_VM_STATE_DOWN)
