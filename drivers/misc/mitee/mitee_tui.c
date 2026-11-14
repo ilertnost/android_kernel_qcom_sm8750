@@ -56,7 +56,6 @@
 #define TUI_RET_OK		0
 #define TUI_RET_DENIED		1
 #define TUI_RET_ERROR		3
-#define TUI_RET_TIMEOUT		8
 
 #define TUI_RESPONSE_TIMEOUT_MS	5000
 
@@ -343,14 +342,16 @@ static u32 send_cmd_to_user(struct mitee_tui *tui, u32 cmd)
 		goto out;
 	}
 
+	/* Never take a stale answer to an earlier request for this one */
+	memset(&tui->user_rsp, 0, sizeof(tui->user_rsp));
 	reinit_completion(&tui->user_comp);
 	tui->event_active = true;
 	wake_up_interruptible(&tui->event_queue);
 
 	if (!wait_for_completion_timeout(&tui->user_comp,
 			msecs_to_jiffies(TUI_RESPONSE_TIMEOUT_MS))) {
+		/* Stock reports this as the missing answer: TUI_RET_ERROR */
 		pr_info("No acknowledge from client, timeout!\n");
-		ret = TUI_RET_TIMEOUT;
 		goto out;
 	}
 
