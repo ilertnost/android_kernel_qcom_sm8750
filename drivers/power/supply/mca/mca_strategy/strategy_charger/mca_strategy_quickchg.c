@@ -4420,6 +4420,33 @@ static int mca_quick_charge_multi_chg_cur_voter_cb(struct mca_votable *votable,
 	return 0;
 }
 
+static void mca_quick_charge_destroy_voter(struct mca_quick_charge_info *info)
+{
+	struct mca_votable *voters[] = {
+		info->thermal_flip_voter, info->chg_disable_voter,
+		info->chg_en_voter, info->single_chg_cur_voter,
+		info->multi_chg_cur_voter,
+	};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(info->voter); i++) {
+		if (!IS_ERR_OR_NULL(info->voter[i]))
+			mca_destroy_votable(info->voter[i]);
+		info->voter[i] = NULL;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(voters); i++) {
+		if (!IS_ERR_OR_NULL(voters[i]))
+			mca_destroy_votable(voters[i]);
+	}
+
+	info->thermal_flip_voter = NULL;
+	info->chg_disable_voter = NULL;
+	info->chg_en_voter = NULL;
+	info->single_chg_cur_voter = NULL;
+	info->multi_chg_cur_voter = NULL;
+}
+
 static int mca_quick_charge_create_voter(struct mca_quick_charge_info *info)
 {
 	static const char * const thermal_name[] = {
@@ -4885,11 +4912,20 @@ static int mca_quick_charge_remove(struct platform_device *pdev)
 	if (!info)
 		return 0;
 
-	/* the works and the notifier must not outlive the devm-allocated info */
+	/*
+	 * Nothing may keep a pointer to the devm-allocated info: withdraw the
+	 * registrations first, then stop the works, then drop the votables
+	 * whose callbacks take info as their data.
+	 */
+	(void)mca_strategy_ops_register(STRATEGY_FUNC_TYPE_QUICK_CHARGE, NULL,
+					NULL, NULL, NULL);
+	g_strategy_quickchg_if_ops.data = NULL;
+	g_quickchg_smartchg_if_ops.data = NULL;
 	(void)unregister_reboot_notifier(&info->shutdown_notifier);
 	cancel_delayed_work_sync(&info->monitor_work);
 	cancel_delayed_work_sync(&info->pps_ptf_work);
 	cancel_delayed_work_sync(&info->vfc_work);
+	mca_quick_charge_destroy_voter(info);
 
 	return 0;
 }
