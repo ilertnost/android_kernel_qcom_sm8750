@@ -3018,8 +3018,11 @@ static int fg_get_one_soc_decimal_rate(void *data, int *rate)
 			break;
 	}
 
-	/* the table starts at soc 0, so a match is never the first entry */
-	*rate = bq->dec_rate_seq[i > 0 ? i - 1 : 0];
+	/*
+	 * The table is {soc, rate} pairs and starts at soc 0, so a match is
+	 * never the first pair; should it be, use that pair's rate.
+	 */
+	*rate = bq->dec_rate_seq[i > 0 ? i - 1 : 1];
 
 	return 0;
 }
