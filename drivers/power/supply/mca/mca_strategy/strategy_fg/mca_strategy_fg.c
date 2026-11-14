@@ -3809,9 +3809,11 @@ static int strategy_fg_remove(struct platform_device *pdev)
 		return 0;
 
 	/*
-	 * The notifier chains and works point into memory that goes away with
-	 * the device.
+	 * The class registrations, notifier chains and works point into
+	 * memory that goes away with the device.
 	 */
+	strategy_class_fg_ops_register(NULL, NULL);
+	mca_strategy_ops_register(STRATEGY_FUNC_TYPE_FG, NULL, NULL, NULL, NULL);
 	mca_event_block_notify_unregister(MCA_EVENT_TYPE_PANEL, &fg->panel_nb);
 	mca_event_block_notify_unregister(MCA_EVENT_TYPE_THERMAL_TEMP,
 					  &fg->thermal_board_nb);

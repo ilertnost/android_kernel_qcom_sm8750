@@ -27,14 +27,12 @@ struct strategy_fg_class_info {
  */
 static struct strategy_fg_class_info g_strategy_fg;
 
+/* Registering NULL ops withdraws the strategy, e.g. when it is removed. */
 int strategy_class_fg_ops_register(void *data,
 				   const struct strategy_fg_class_ops *ops)
 {
-	if (!ops)
-		return -1;
-
 	g_strategy_fg.ops = ops;
-	g_strategy_fg.data = data;
+	g_strategy_fg.data = ops ? data : NULL;
 
 	return 0;
 }
