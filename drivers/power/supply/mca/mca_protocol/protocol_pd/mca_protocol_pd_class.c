@@ -969,19 +969,19 @@ static ssize_t pd_class_sysfs_store(struct device *dev,
 				    const char *buf, size_t count);
 
 static struct mca_sysfs_attr_info pd_class_sysfs_field_tbl[] = {
-	mca_sysfs_attr_ro(pd_class_sysfs, 0444, PD_PROP_CC_ORIENTATION,
+	mca_sysfs_attr_ro(pd_class_sysfs, 0440, PD_PROP_CC_ORIENTATION,
 			  cc_orientation),
-	mca_sysfs_attr_ro(pd_class_sysfs, 0444, PD_PROP_APDO_MAX, apdo_max),
-	mca_sysfs_attr_ro(pd_class_sysfs, 0444, PD_PROP_HAS_DP, has_dp),
-	mca_sysfs_attr_ro(pd_class_sysfs, 0444, PD_PROP_CID_STATUS,
+	mca_sysfs_attr_ro(pd_class_sysfs, 0440, PD_PROP_APDO_MAX, apdo_max),
+	mca_sysfs_attr_ro(pd_class_sysfs, 0440, PD_PROP_HAS_DP, has_dp),
+	mca_sysfs_attr_ro(pd_class_sysfs, 0440, PD_PROP_CID_STATUS,
 			  cid_status),
-	mca_sysfs_attr_ro(pd_class_sysfs, 0444, PD_PROP_OTG_UI_SUPPORT,
+	mca_sysfs_attr_ro(pd_class_sysfs, 0440, PD_PROP_OTG_UI_SUPPORT,
 			  otg_ui_support),
-	mca_sysfs_attr_rw(pd_class_sysfs, 0644, PD_PROP_CC_TOGGLE, cc_toggle),
-	mca_sysfs_attr_rw(pd_class_sysfs, 0644, PD_PROP_PPS_PTF, pps_ptf),
-	mca_sysfs_attr_ro(pd_class_sysfs, 0444, PD_PROP_CC_SHORT_VBUS,
+	mca_sysfs_attr_rw(pd_class_sysfs, 0640, PD_PROP_CC_TOGGLE, cc_toggle),
+	mca_sysfs_attr_rw(pd_class_sysfs, 0640, PD_PROP_PPS_PTF, pps_ptf),
+	mca_sysfs_attr_ro(pd_class_sysfs, 0440, PD_PROP_CC_SHORT_VBUS,
 			  cc_short_vbus),
-	mca_sysfs_attr_ro(pd_class_sysfs, 0444, PD_PROP_TYPEC_MODE,
+	mca_sysfs_attr_ro(pd_class_sysfs, 0440, PD_PROP_TYPEC_MODE,
 			  typec_mode),
 };
 
