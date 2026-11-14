@@ -1134,6 +1134,8 @@ static int mca_wireless_quick_charge_open_path(struct mca_wireless_quick_charge_
 	/*
 	 * Nudge the receiver up until the pump is seen carrying current on
 	 * more than three reads, giving up after a fixed number of tries.
+	 * Using up every try counts as a failure even if the last read was
+	 * the one that made it.
 	 */
 	for (i = 0; i < MCA_WLS_QUICK_CHG_OPEN_PATH_MAX_TRY && cnt <= 3; i++) {
 		ret = platform_class_cp_get_bus_current(info->proc_data.cur_work_cp, &ibus);
@@ -1156,7 +1158,7 @@ static int mca_wireless_quick_charge_open_path(struct mca_wireless_quick_charge_
 			goto out;
 	}
 
-	if (cnt <= 3) {
+	if (i == MCA_WLS_QUICK_CHG_OPEN_PATH_MAX_TRY) {
 		info->proc_data.error_num[info->proc_data.cur_work_cp]++;
 		ret = -1;
 	}
