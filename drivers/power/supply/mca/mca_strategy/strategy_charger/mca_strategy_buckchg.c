@@ -170,13 +170,13 @@ struct sw_cv_volt_delta {
 
 static const struct sw_cv_volt_delta sw_cv_volt_delta_map[] = {
 	{ 1000, 4 },
-	{    1, 2 },
+	{    0, 2 },
 };
 #define SW_CV_VOLT_DELTA_DEFAULT		4
 
 static const struct sw_cv_volt_delta base_flip_sw_cv_volt_delta_map[] = {
 	{ 1000, 7 },
-	{    1, 2 },
+	{    0, 2 },
 };
 #define BASE_FLIP_SW_CV_VOLT_DELTA_DEFAULT	7
 
@@ -2339,7 +2339,7 @@ static int sw_cv_volt_delta(const struct sw_cv_volt_delta *map, int size,
 	int i;
 
 	for (i = 0; i < size; i++) {
-		if (ibat_ma >= map[i].ibat_ma)
+		if (ibat_ma > map[i].ibat_ma)
 			return map[i].delta_mv;
 	}
 
