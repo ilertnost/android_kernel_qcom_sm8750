@@ -423,6 +423,21 @@ static ssize_t btb_sysfs_show(struct device *dev,
 /* The subdirectory the connectors appear under. */
 #define BMD_DIR_NAME	"bmd"
 
+/* Give back the pins claimed for the connectors before @count. */
+static void mca_bmd_release_gpios(struct mca_bmd_dev *chip, int count)
+{
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct bmd_scheme_data *s = &chip->bmd_scheme[i];
+
+		if (s->scheme == GPIO_SCHEME && !s->cfg_failed) {
+			gpio_free(s->gpio);
+			s->cfg_failed = true;
+		}
+	}
+}
+
 static int mca_bmd_parse_dt(struct mca_bmd_dev *chip)
 {
 	struct device_node *np = chip->dev->of_node;
@@ -449,7 +464,13 @@ static int mca_bmd_parse_dt(struct mca_bmd_dev *chip)
 		case ADC_SCHEME:
 			chip->bmd_scheme[i].chan =
 				devm_iio_channel_get(chip->dev, "btb_adc");
-			/* a channel that is not there cannot be read */
+			/* wait for an ADC that is not there yet ... */
+			if (PTR_ERR_OR_ZERO(chip->bmd_scheme[i].chan) ==
+			    -EPROBE_DEFER) {
+				mca_bmd_release_gpios(chip, i);
+				return -EPROBE_DEFER;
+			}
+			/* ... but a channel that is missing cannot be read */
 			chip->bmd_scheme[i].cfg_failed =
 				IS_ERR(chip->bmd_scheme[i].chan);
 			break;
@@ -475,6 +496,7 @@ static int mca_bmd_probe(struct platform_device *pdev)
 	struct mca_bmd_dev *chip;
 	int wireless = 0;
 	int online = 0;
+	int ret;
 
 	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
@@ -488,7 +510,10 @@ static int mca_bmd_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&chip->delay_report_bmd_sts_work,
 			  mca_bmd_delay_report_bmd_sts_work);
 
-	if (mca_bmd_parse_dt(chip)) {
+	ret = mca_bmd_parse_dt(chip);
+	if (ret == -EPROBE_DEFER)
+		return ret;
+	if (ret) {
 		mca_log_err("parse dt faile\n");
 
 		return -1;
