@@ -34,11 +34,21 @@ struct platform_wireless_class_ops_data {
 static struct platform_wireless_class_ops_data
 	platform_wireless_data[WIRELESS_ROLE_MAX];
 
+/* Registering NULL ops withdraws the coil driver, e.g. when it is removed. */
 int platform_class_wireless_register_ops(enum platform_class_wireless_role role,
 					 void *data,
 					 const struct platform_class_wireless_ops *ops)
 {
-	if (role >= WIRELESS_ROLE_MAX || !data || !ops)
+	if (role >= WIRELESS_ROLE_MAX)
+		return -EOPNOTSUPP;
+
+	if (!ops) {
+		platform_wireless_data[role].ops = NULL;
+		platform_wireless_data[role].data = NULL;
+		return 0;
+	}
+
+	if (!data)
 		return -EOPNOTSUPP;
 
 	platform_wireless_data[role].ops = ops;

@@ -3317,6 +3317,31 @@ static int nuvolta_1652_shutdown_cb(struct notifier_block *nb,
 
 	return NOTIFY_DONE;
 }
+
+/*
+ * The chip data goes away with the device, so nothing may still point at it:
+ * the interrupts go first, so that none of them can queue a work again, then
+ * the reboot notifier and the works.
+ */
+static void nuvolta_1652_release(struct nuvolta_1652_chg *chip)
+{
+	struct device *dev = &chip->client->dev;
+
+	if (chip->irqs_requested & NU1652_IRQ_RX)
+		devm_free_irq(dev, chip->irq, chip);
+	if (chip->irqs_requested & NU1652_IRQ_POWER_GOOD)
+		devm_free_irq(dev, chip->power_good_irq, chip);
+	if (chip->irqs_requested & NU1652_IRQ_HALL)
+		devm_free_irq(dev, chip->hall_int_irq, chip);
+	chip->irqs_requested = 0;
+
+	unregister_reboot_notifier(&chip->shutdown_notifier);
+	cancel_delayed_work_sync(&chip->interrupt_work);
+	cancel_delayed_work_sync(&chip->pg_detect_work);
+	cancel_delayed_work_sync(&chip->init_detect_work);
+	cancel_delayed_work_sync(&chip->hall_interrupt_work);
+}
+
 static int nuvolta_1652_probe(struct i2c_client *client)
 {
 	int ret = 0;
@@ -3373,6 +3398,8 @@ static int nuvolta_1652_probe(struct i2c_client *client)
 		if (ret)
 			mca_log_err("Failed irq = %d ret = %d\n", chip->irq,
 				    ret);
+		else
+			chip->irqs_requested |= NU1652_IRQ_RX;
 	}
 	enable_irq_wake(chip->irq);
 
@@ -3386,6 +3413,8 @@ static int nuvolta_1652_probe(struct i2c_client *client)
 		if (ret)
 			mca_log_err("Failed irq = %d ret = %d\n",
 				    chip->power_good_irq, ret);
+		else
+			chip->irqs_requested |= NU1652_IRQ_POWER_GOOD;
 	}
 	enable_irq_wake(chip->power_good_irq);
 
@@ -3400,6 +3429,8 @@ static int nuvolta_1652_probe(struct i2c_client *client)
 			if (ret)
 				mca_log_err("Failed hall irq = %d ret = %d\n",
 					    chip->hall_int_irq, ret);
+			else
+				chip->irqs_requested |= NU1652_IRQ_HALL;
 		}
 		enable_irq_wake(chip->hall_int_irq);
 	}
@@ -3422,6 +3453,7 @@ static int nuvolta_1652_probe(struct i2c_client *client)
 
 err_dev:
 	mca_log_err("nuvolta 1652 probe failed\n");
+	nuvolta_1652_release(chip);
 	return ret;
 }
 
@@ -3448,15 +3480,8 @@ static void nuvolta_1652_remove(struct i2c_client *client)
 	if (!chip)
 		return;
 
-	/*
-	 * The chip data goes away with the device, so nothing may still point
-	 * at it: not the reboot notifier, not a pending work.
-	 */
-	unregister_reboot_notifier(&chip->shutdown_notifier);
-	cancel_delayed_work_sync(&chip->interrupt_work);
-	cancel_delayed_work_sync(&chip->pg_detect_work);
-	cancel_delayed_work_sync(&chip->init_detect_work);
-	cancel_delayed_work_sync(&chip->hall_interrupt_work);
+	platform_class_wireless_register_ops(chip->rx_role, NULL, NULL);
+	nuvolta_1652_release(chip);
 
 	if (chip->irq_gpio > 0)
 		gpio_free(chip->irq_gpio);

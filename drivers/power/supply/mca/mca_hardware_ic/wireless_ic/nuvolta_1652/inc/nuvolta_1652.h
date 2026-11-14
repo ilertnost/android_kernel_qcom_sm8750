@@ -357,6 +357,11 @@ enum fod_para_ele {
 };
 
 #define DEFAULT_FOD_PARAM_LEN 20
+
+/* Interrupts requested at probe, in nuvolta_1652_chg.irqs_requested. */
+#define NU1652_IRQ_RX			BIT(0)
+#define NU1652_IRQ_POWER_GOOD		BIT(1)
+#define NU1652_IRQ_HALL			BIT(2)
 enum PARAMS_T {
 	PARAMS_T_GAIN,
 	PARAMS_T_OFFSET,
@@ -497,6 +502,7 @@ struct nuvolta_1652_chg {
 	struct mutex data_transfer_lock;
 	//notifier
 	struct notifier_block shutdown_notifier;
+	unsigned int irqs_requested;
 	//delay_work
 	struct delayed_work init_detect_work;
 	struct delayed_work pg_detect_work;
