@@ -11,7 +11,7 @@
  *    are notified on change),
  *  - and exchanges a set of plain values with other components (camera,
  *    display, modem and WLAN limits, sensor readings, ...).
- * Boards with a "power_save" DT node also get /sys/class/thermal/power_save.
+ * /sys/class/thermal/power_save holds the power save mode and level.
  */
 
 #define pr_fmt(fmt) "mi_thermal_interface: " fmt
@@ -592,16 +592,10 @@ static int __init mi_thermal_interface_init(void)
 		goto remove_cpus;
 	}
 
-	np = of_find_node_by_name(NULL, "power_save");
-	if (np) {
-		power_save_dev = mi_thermal_create_dev("power_save",
-						       power_save_groups);
-		if (IS_ERR(power_save_dev)) {
-			pr_err("Cannot create power_save: %ld\n",
-			       PTR_ERR(power_save_dev));
-			power_save_dev = NULL;
-		}
-		of_node_put(np);
+	power_save_dev = mi_thermal_create_dev("power_save", power_save_groups);
+	if (IS_ERR(power_save_dev)) {
+		pr_err("Cannot create power_save: %ld\n", PTR_ERR(power_save_dev));
+		power_save_dev = NULL;
 	}
 
 	INIT_WORK(&usb_online_work, usb_online_work_fn);
