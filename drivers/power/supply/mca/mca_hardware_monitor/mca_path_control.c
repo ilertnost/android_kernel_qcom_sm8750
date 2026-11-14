@@ -757,9 +757,9 @@ static int mca_path_control_parse_gpio_scheme(struct mca_path_control *chip,
 		return -1;
 	}
 
+	/* A pin that could not be claimed belongs to someone else: leave it. */
 	if (gpio_request(cfg->gpio, prop)) {
 		mca_log_err("request enable-gate-gpio[%d] failed\n", cfg->gpio);
-		gpio_free(cfg->gpio);
 		return -1;
 	}
 
