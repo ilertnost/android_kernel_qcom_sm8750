@@ -1059,32 +1059,18 @@ err_free_secmem:
 	return rc ? rc : -EIO;
 }
 
-static int mitee_msgq_secmem_reclaim(struct mitee_msgq_dev *qdev,
-				     gh_memparcel_handle_t handle)
+/* Take lent memory back from the VM and free it, @secmem is unlisted */
+static int mitee_msgq_secmem_release(struct mitee_msgq_dev *qdev,
+				     struct mitee_secmem *secmem)
 {
 	const gh_vmid_t self[] = { qdev->self_vmid };
 	const gh_vmid_t peer[] = { qdev->peer_vmid };
-	struct mitee_secmem *secmem, *tmp;
-	bool found = false;
 	int rc;
 
-	mutex_lock(&qdev->secmem_mutex);
-	list_for_each_entry_safe(secmem, tmp, &qdev->secmem_list, link) {
-		if (secmem->handle == handle) {
-			list_del(&secmem->link);
-			found = true;
-			break;
-		}
-	}
-	mutex_unlock(&qdev->secmem_mutex);
-
-	if (!found)
-		return -EINVAL;
-
-	rc = ghd_rm_mem_reclaim(handle, 0);
+	rc = ghd_rm_mem_reclaim(secmem->handle, 0);
 	if (rc) {
-		pr_err("mitee msgq mem_reclaim: failed with 0x%x %d", handle,
-		       rc);
+		pr_err("mitee msgq mem_reclaim: failed with 0x%x %d",
+		       secmem->handle, rc);
 		goto leak;
 	}
 
@@ -1104,6 +1090,44 @@ leak:
 	/* The pages may still belong to the VM, never hand them out again */
 	kfree(secmem);
 	return rc;
+}
+
+static int mitee_msgq_secmem_reclaim(struct mitee_msgq_dev *qdev,
+				     gh_memparcel_handle_t handle)
+{
+	struct mitee_secmem *secmem, *tmp;
+	bool found = false;
+
+	mutex_lock(&qdev->secmem_mutex);
+	list_for_each_entry_safe(secmem, tmp, &qdev->secmem_list, link) {
+		if (secmem->handle == handle) {
+			list_del(&secmem->link);
+			found = true;
+			break;
+		}
+	}
+	mutex_unlock(&qdev->secmem_mutex);
+
+	if (!found)
+		return -EINVAL;
+
+	return mitee_msgq_secmem_release(qdev, secmem);
+}
+
+/* The VM is gone: take back everything it borrowed through RPC 90 */
+static void mitee_msgq_secmem_reclaim_all(struct mitee_msgq_dev *qdev)
+{
+	struct mitee_secmem *secmem, *tmp;
+	LIST_HEAD(lent);
+
+	mutex_lock(&qdev->secmem_mutex);
+	list_splice_init(&qdev->secmem_list, &lent);
+	mutex_unlock(&qdev->secmem_mutex);
+
+	list_for_each_entry_safe(secmem, tmp, &lent, link) {
+		list_del(&secmem->link);
+		mitee_msgq_secmem_release(qdev, secmem);
+	}
 }
 
 /*
@@ -1202,6 +1226,7 @@ static int mitee_msgq_rm_cb(struct notifier_block *nb, unsigned long cmd,
 	} else {
 		qdev->vm_state = MITEE_VM_STATE_DOWN;
 		mitee_msgq_unshare_static_mem(qdev);
+		mitee_msgq_secmem_reclaim_all(qdev);
 	}
 
 	return NOTIFY_DONE;
