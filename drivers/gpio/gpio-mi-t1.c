@@ -24,7 +24,18 @@
 #include <linux/uaccess.h>
 
 #define MI_T1_PROC_NAME		"modem_t1_gpio_ctrl"
-#define MI_T1_MAX_GPIOS		19
+
+/*
+ * The lines are named mi-t1-gpio-N, without a -gpios suffix. gpiolib keeps
+ * the label pointer, so the names must outlive probe.
+ */
+static const char * const mi_t1_gpio_names[] = {
+	"mi-t1-gpio-1", "mi-t1-gpio-2", "mi-t1-gpio-3", "mi-t1-gpio-4",
+	"mi-t1-gpio-5", "mi-t1-gpio-6", "mi-t1-gpio-7", "mi-t1-gpio-8",
+	"mi-t1-gpio-9", "mi-t1-gpio-10", "mi-t1-gpio-11", "mi-t1-gpio-12",
+};
+
+#define MI_T1_MAX_GPIOS		ARRAY_SIZE(mi_t1_gpio_names)
 
 struct mi_t1_gpio {
 	struct gpio_desc *desc;
@@ -110,7 +121,6 @@ static int mi_t1_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mi_t1_data *data;
-	char name[sizeof("mi-t1-gpio-") + 2];
 	u32 first_pin = 0;
 	int base = 0;
 	unsigned int i;
@@ -132,9 +142,8 @@ static int mi_t1_probe(struct platform_device *pdev)
 
 	for (i = 0; i < data->count; i++) {
 		struct mi_t1_gpio *t1_gpio = &data->gpios[i];
+		const char *name = mi_t1_gpio_names[i];
 
-		/* The lines are named mi-t1-gpio-N, without a -gpios suffix */
-		snprintf(name, sizeof(name), "mi-t1-gpio-%u", i + 1);
 		gpio = of_get_named_gpio(dev->of_node, name, 0);
 		if (gpio < 0)
 			return dev_err_probe(dev, gpio, "failed to get %s\n",
