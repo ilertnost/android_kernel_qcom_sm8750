@@ -103,11 +103,17 @@
 #include <linux/cpufreq_times.h>
 #include <linux/dma-buf.h>
 
+#ifdef CONFIG_USER_NS
+#include <linux/user_namespace.h>
+#endif
+
 #include <asm/pgalloc.h>
 #include <linux/uaccess.h>
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
+
+#include <linux/sched/bore.h>
 
 #include <trace/events/sched.h>
 
@@ -634,6 +640,9 @@ void free_task(struct task_struct *tsk)
 	rt_mutex_debug_task_free(tsk);
 	ftrace_graph_exit_task(tsk);
 	arch_release_task_struct(tsk);
+#ifdef CONFIG_SCHED_BORE
+	kfree(tsk->se.bore_stats);
+#endif
 	if (tsk->flags & PF_KTHREAD)
 		free_kthread_struct(tsk);
 	bpf_task_storage_free(tsk);
@@ -1151,6 +1160,14 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	if (err)
 		goto free_tsk;
 
+#ifdef CONFIG_SCHED_BORE
+	/*
+	 * arch_dup_task_struct() copies the parent task_struct verbatim, so avoid
+	 * sharing the parent's bore_stats pointer on early fork failure paths.
+	 */
+	tsk->se.bore_stats = NULL;
+#endif
+
 	err = alloc_thread_stack_node(tsk, node);
 	if (err)
 		goto free_tsk;
@@ -1159,6 +1176,12 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	refcount_set(&tsk->stack_refcount, 1);
 #endif
 	account_kernel_stack(tsk, 1);
+
+#ifdef CONFIG_SCHED_BORE
+	tsk->se.bore_stats = kzalloc(sizeof(struct sched_bore_stats), GFP_KERNEL);
+	if (unlikely(!tsk->se.bore_stats))
+		goto free_stack;
+#endif
 
 	err = scs_prepare(tsk, node);
 	if (err)
@@ -1242,6 +1265,10 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	return tsk;
 
 free_stack:
+	#ifdef CONFIG_SCHED_BORE
+	kfree(tsk->se.bore_stats);
+	tsk->se.bore_stats = NULL;
+	#endif
 	exit_task_stack_account(tsk);
 	free_thread_stack(tsk);
 free_tsk:
@@ -2683,6 +2710,11 @@ __latent_entropy struct task_struct *copy_process(
 
 	p->start_time = ktime_get_ns();
 	p->start_boottime = ktime_get_boottime_ns();
+
+	#ifdef CONFIG_SCHED_BORE
+	if (likely(p->pid))
+		sched_clone_bore(p, current, clone_flags, p->start_time);
+	#endif // CONFIG_SCHED_BORE
 
 	/*
 	 * Make it visible to the rest of the system, but dont wake it up yet.

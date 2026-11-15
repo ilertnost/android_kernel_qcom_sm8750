@@ -96,6 +96,8 @@
 #include "../../io_uring/io-wq.h"
 #include "../smpboot.h"
 
+#include <linux/sched/bore.h>
+
 #include <trace/hooks/sched.h>
 #include <trace/hooks/cgroup.h>
 #include <trace/hooks/dtask.h>
@@ -10363,6 +10365,11 @@ void __init sched_init(void)
 	init_uclamp();
 
 	preempt_dynamic_init();
+
+
+#ifdef CONFIG_SCHED_BORE
+	sched_bore_init();
+#endif // CONFIG_SCHED_BORE
 
 	scheduler_running = 1;
 }

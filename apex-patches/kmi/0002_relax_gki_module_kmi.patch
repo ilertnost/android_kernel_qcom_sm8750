@@ -1,0 +1,82 @@
+diff --git a/arch/arm64/configs/gki_defconfig b/arch/arm64/configs/gki_defconfig
+index 7d13a4d64..3ea0b3d7b 100644
+--- a/arch/arm64/configs/gki_defconfig
++++ b/arch/arm64/configs/gki_defconfig
+@@ -102,6 +102,7 @@ CONFIG_MODVERSIONS=y
+ CONFIG_MODULE_SCMVERSION=y
+ CONFIG_MODULE_SIG=y
+ CONFIG_MODULE_SIG_PROTECT=y
++CONFIG_APEX_RELAX_GKI_MODULE_KMI=y
+ CONFIG_MODPROBE_PATH="/system/bin/modprobe"
+ CONFIG_BLK_DEV_ZONED=y
+ CONFIG_BLK_DEV_THROTTLING=y
+diff --git a/kernel/module/Kconfig b/kernel/module/Kconfig
+index ef582840f..f6d301106 100644
+--- a/kernel/module/Kconfig
++++ b/kernel/module/Kconfig
+@@ -242,6 +242,33 @@ config MODULE_SIG_PROTECT
+ 	    exported by the Android GKI modules. Loading will fail and return
+ 	    -EACCES (Permission denied) if symbol access conditions are not met.
+ 
++config APEX_RELAX_GKI_MODULE_KMI
++	bool "Relax GKI symbol protection for unsigned modules"
++	depends on MODULE_SIG_PROTECT
++	help
++	  Let modules that are not signed with the GKI key import any exported
++	  symbol, not only the ones on the generated unprotected list.
++
++	  With this off, kernel/module/main.c refuses such a module with -EACCES,
++	  which modprobe reports as "Permission denied". The reason is printed by
++	  the kernel as "Protected symbol: <name>".
++
++	  Why this exists. The stock modules on the device are built for 6.6.118.
++	  Our kernel is AOSP GKI 6.6.139, and the 6.6.139 KMI list no longer
++	  contains every symbol those modules import, so ten of them are refused:
++	  bluetooth, hci_uart, btbcm, btqca, btsdio, hidp, rfcomm, rtl8150 and
++	  9pnet_fd. The KMI lists are stock AOSP, untouched, so this is a
++	  consequence of the version gap rather than anything done here.
++
++	  If this is off, every clean AOSP 6.6.139 build behaves the same way on
++	  this device.
++
++	  Trade-off. Unsigned modules are no longer confined to a vetted symbol
++	  set. On a kernel that already grants root through SukiSU that boundary
++	  protects little, but it is not nothing. Enabling this can also load a
++	  second Bluetooth stack on top of the working vendor one, which may break
++	  Bluetooth rather than fix it. Test it, do not assume it.
++
+ config MODULE_SIG_ALL
+ 	bool "Automatically sign all modules"
+ 	default y
+diff --git a/kernel/module/gki_module.c b/kernel/module/gki_module.c
+index 65a2883b5..a3617cc7a 100644
+--- a/kernel/module/gki_module.c
++++ b/kernel/module/gki_module.c
+@@ -54,6 +54,21 @@ bool gki_is_module_protected_export(const char *name)
+  */
+ bool gki_is_module_unprotected_symbol(const char *name)
+ {
++#ifdef CONFIG_APEX_RELAX_GKI_MODULE_KMI
++	/*
++	 * Relaxed on purpose, see CONFIG_APEX_RELAX_GKI_MODULE_KMI.
++	 *
++	 * The stock modules here are built for 6.6.118 and import symbols the
++	 * 6.6.139 KMI list no longer carries. Refusing them leaves a permanent
++	 * tail of modprobe failures in the boot log for modules that are
++	 * otherwise harmless.
++	 *
++	 * Only the access check is relaxed. gki_is_module_protected_export() is
++	 * untouched, so an unsigned module still may not re-export a symbol
++	 * that belongs to a protected GKI module.
++	 */
++	return true;
++#else
+ 	if (NR_UNPROTECTED_SYMBOLS) {
+ 		return bsearch(name, gki_unprotected_symbols, NR_UNPROTECTED_SYMBOLS,
+ 				MAX_UNPROTECTED_NAME_LEN, cmp_name) != NULL;
+@@ -65,4 +80,5 @@ bool gki_is_module_unprotected_symbol(const char *name)
+ 		 */
+ 		return true;
+ 	}
++#endif
+ }

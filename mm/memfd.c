@@ -19,6 +19,9 @@
 #include <linux/shmem_fs.h>
 #include <linux/memfd.h>
 #include <linux/pid_namespace.h>
+#include <linux/dcache.h>
+#include <linux/uaccess.h>
+#include <linux/capability.h>
 #include <uapi/linux/memfd.h>
 
 /*
@@ -388,3 +391,136 @@ err_name:
 	kfree(name);
 	return error;
 }
+
+#ifdef CONFIG_MEMFD_ASHMEM_SHIM
+/*
+ * Qualcomm "ashmem over memfd" compatibility shim.
+ *
+ * Reconstructed faithfully from the stock Xiaomi kernel 6.6.118 (dada,
+ * SM8750) disassembly (memfd_ashmem_shim_ioctl @ 0xffffffc0803c4298, hooked
+ * into shmem_file_operations.unlocked_ioctl/compat_ioctl).
+ *
+ * The Android V runtime (ART/jit, etc.) creates memfd files and issues
+ * ashmem-style ioctls on them. A plain GKI returns -ENOTTY; on stock these
+ * calls are serviced by converting them into memfd seal fcntl operations.
+ *
+ * NOTE: several command numbers here are NON-STANDARD (Qualcomm custom),
+ * decoded from the stock jump tables. Keep them exactly as-is.
+ */
+
+/* ---- decoded stock command numbers ---- */
+/* returns inode->i_size */
+#define SHIM_CMD_GET_SIZE		0x7704UL
+/* F_GET_SEALS based "get prot mask" */
+#define SHIM_CMD_GET_PROT		0x7706UL
+/* returns 1 */
+#define SHIM_CMD_RET1			0x7709UL
+/* returns capable(CAP_SYS_ADMIN) ? 0 : -1 */
+#define SHIM_CMD_CAP			0x770aUL
+/* GET_NAME (memfd: prefix) */
+#define SHIM_CMD_GET_NAME		0x81007702UL
+/* copy a 64-bit inode field (@64) to user */
+#define SHIM_CMD_GET8			0x8008770bUL
+/* F_ADD_SEALS(0x10) based "set/pin" */
+#define SHIM_CMD_ADD_SEALS		0x40087705UL
+/* -EINVAL (two variants) */
+#define SHIM_CMD_EINVAL_A		0x40087703UL
+#define SHIM_CMD_EINVAL_B		0x41007701UL
+
+long memfd_ashmem_shim_ioctl(struct file *file, unsigned int cmd,
+			     unsigned long arg)
+{
+	long ret;
+	unsigned long val;
+
+	switch (cmd) {
+	case SHIM_CMD_GET_SIZE:
+		return (long)i_size_read(file_inode(file));
+
+	case SHIM_CMD_RET1:
+		return 1;
+
+	case SHIM_CMD_CAP:
+		return capable(CAP_SYS_ADMIN) ? 0 : -1;
+
+	case SHIM_CMD_GET_PROT:
+		/*
+		 * err = F_GET_SEALS; if (err<0) err = (err & 0x18) ? 5 : 7;
+		 */
+		ret = memfd_fcntl(file, F_GET_SEALS, 0);
+		if (ret < 0)
+			return (ret & 0x18) ? 5 : 7;
+		return ret;
+
+	case SHIM_CMD_ADD_SEALS:
+		/*
+		 * err = F_GET_SEALS; if (err<0) return err;
+		 * x8 = (err & 0x18) ? -8 : -6;   x9 = arg | 5
+		 * if (x8 & x9) return -EINVAL;
+		 * if (arg & 2) return 0;
+		 * return F_ADD_SEALS with F_SEAL_FUTURE_WRITE (0x10);
+		 */
+		ret = memfd_fcntl(file, F_GET_SEALS, 0);
+		if (ret < 0)
+			return ret;
+		if ((ret & 0x18 ? -8 : -6) & (arg | 5))
+			return -EINVAL;
+		if (arg & 2)
+			return 0;
+		return memfd_fcntl(file, F_ADD_SEALS, F_SEAL_FUTURE_WRITE);
+
+	case SHIM_CMD_GET8:
+		/* copy 8 bytes from the inode field at offset 64 to user */
+		memcpy(&val, (char *)file_inode(file) + 64, sizeof(val));
+		if (copy_to_user((void __user *)arg, &val, sizeof(val)))
+			return -EFAULT;
+		return 0;
+
+	case SHIM_CMD_GET_NAME:
+	{
+		/*
+		 * name = file->f_path.dentry->d_name.name
+		 * p = strstr(name, "memfd:"); !name -> -EINVAL
+		 * p != name -> -ENOTTY;  name += 6
+		 * len = strlen(name)+1; len>0x100 -> -EINVAL
+		 * copy_to_user(arg, name, len) -> -EFAULT on failure
+		 */
+		const char *name, *p;
+		size_t len;
+
+		name = file->f_path.dentry->d_name.name;
+		if (!name)
+			return -EINVAL;
+		p = strstr(name, MFD_NAME_PREFIX);
+		if (p != name)
+			return -ENOTTY;
+		name += MFD_NAME_PREFIX_LEN;
+		len = strlen(name) + 1;
+		if (len > 0x100)
+			return -EINVAL;
+		if (copy_to_user((void __user *)arg, name, len))
+			return -EFAULT;
+		return 0;
+	}
+
+	default:
+		if (cmd == SHIM_CMD_EINVAL_A || cmd == SHIM_CMD_EINVAL_B)
+			return -EINVAL;
+		return -ENOTTY;
+	}
+}
+
+long memfd_ashmem_shim_compat_ioctl(struct file *file, unsigned int cmd,
+				    unsigned long arg)
+{
+	unsigned int mapped = cmd;
+
+	/* decoded from stock compat_ioctl (two remaps) */
+	if (cmd == 0x40087703UL)
+		mapped = 0x400c7703UL;
+	else if (cmd == 0x40087705UL)
+		mapped = 0x40087705UL;
+
+	return memfd_ashmem_shim_ioctl(file, mapped, arg);
+}
+#endif /* CONFIG_MEMFD_ASHMEM_SHIM */

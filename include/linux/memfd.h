@@ -27,4 +27,12 @@ static inline unsigned int memfd_file_seals(struct file *file)
 	return sealsp ? *sealsp : 0;
 }
 
+#ifdef CONFIG_MEMFD_ASHMEM_SHIM
+extern long memfd_ashmem_shim_ioctl(struct file *file, unsigned int cmd,
+				    unsigned long arg);
+extern long memfd_ashmem_shim_compat_ioctl(struct file *file,
+					   unsigned int cmd,
+					   unsigned long arg);
+#endif
+
 #endif /* __LINUX_MEMFD_H */

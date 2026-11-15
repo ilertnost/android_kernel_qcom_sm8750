@@ -1,0 +1,28 @@
+diff --git a/fs/erofs/decompressor.c b/fs/erofs/decompressor.c
+index 8f672a760028..3a5ef4abb26a 100644
+--- a/fs/erofs/decompressor.c
++++ b/fs/erofs/decompressor.c
+@@ -14,7 +14,22 @@
+ 
+ #define LZ4_MAX_DISTANCE_PAGES	(DIV_ROUND_UP(LZ4_DISTANCE_MAX, PAGE_SIZE) + 1)
+ #ifndef LZ4_DECOMPRESS_INPLACE_MARGIN
+-#define LZ4_DECOMPRESS_INPLACE_MARGIN(srcsize)  (((srcsize) >> 8) + 32)
++/*
++ * TEST PATCH: force the docopy path for LZ4 inplace decompression.
++ *
++ * The stock HyperOS 4 kernel has this as a *function*
++ * (z_erofs_get_lz4_decompress_inplace_margin, with a __setup boot
++ * parameter) rather than this upstream constant. When the margin here
++ * is smaller than what stock requires, the inplace path is taken more
++ * often, and LZ4 can overwrite source bytes it has not read yet.
++ *
++ * Making the margin ~0U guarantees
++ *     omargin < LZ4_DECOMPRESS_INPLACE_MARGIN(...)
++ * is always true, so z_erofs_lz4_handle_overlap() always goes to
++ * docopy (the per-CPU buffer, i.e. the safe path). If this fixes the
++ * libminikin.so read, the margin is the root cause.
++ */
++#define LZ4_DECOMPRESS_INPLACE_MARGIN(srcsize)  (~0U)
+ #endif
+ 
+ struct z_erofs_lz4_decompress_ctx {

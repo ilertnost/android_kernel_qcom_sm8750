@@ -1,2 +1,26 @@
 DEFCONFIG=gki_defconfig
 POST_DEFCONFIG_CMDS="check_defconfig"
+
+# Target ISA.
+#
+# The kernel had no -march at all, so clang defaulted every translation unit
+# to armv8-a. Oryon (SM8750) is ARMv9.2-A, so target it directly.
+#
+# This is the Kleaf/legacy build.sh path. The plain `make` build documented in
+# README.md reads the same value from KBUILD_CFLAGS in arch/arm64/Makefile.
+#
+# armv9.2-a defines __ARM_FEATURE_SVE and __ARM_FEATURE_SVE2. Kernel C code is
+# compiled with -mgeneral-regs-only, which keeps the vectoriser off, so no SVE
+# is emitted there.
+#
+# Left out on purpose:
+#
+# -fstrict-aliasing. The top level Makefile sets -fno-strict-aliasing at line
+# 583 because several subsystems rely on non-strict aliasing. KCFLAGS is
+# appended at line 1063, so anything passed here would override that.
+#
+# -O3. CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE already gives -O2. -O3 grows the text
+# and mobile I-cache is small enough that it can measure negative.
+#
+# -fomit-frame-pointer. Already added by the top level Makefile at line 889.
+KCFLAGS="${KCFLAGS} -march=armv9.2-a+crypto+dotprod"

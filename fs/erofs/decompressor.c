@@ -14,8 +14,46 @@
 
 #define LZ4_MAX_DISTANCE_PAGES	(DIV_ROUND_UP(LZ4_DISTANCE_MAX, PAGE_SIZE) + 1)
 #ifndef LZ4_DECOMPRESS_INPLACE_MARGIN
-#define LZ4_DECOMPRESS_INPLACE_MARGIN(srcsize)  (((srcsize) >> 8) + 32)
+/*
+ * LZ4 inplace decompression margin.
+ *
+ * Upstream Linux uses (((srcsize) >> 8) + 32). On this kernel that value
+ * corrupts reads: /system/lib64/libminikin.so came back 2409 bytes short of
+ * correct (offsets 0x754fd..0x75fcd, inside .eh_frame/.eh_frame_hdr), which
+ * crashes minikin::FontFamily::FontFamily and puts system_server into a
+ * crashloop.
+ *
+ * The margin decides whether LZ4 may decompress inplace - output written
+ * into the same buffer, overwriting compressed source bytes that have not
+ * been read yet - or must take the safe docopy path:
+ *
+ *     if (... || omargin < LZ4_DECOMPRESS_INPLACE_MARGIN(rq->inputsize))
+ *             goto docopy;
+ *
+ * So a larger margin means docopy more often, which is safe but copies.
+ *
+ * Measured on device, oracle = md5sum /system/lib64/libminikin.so:
+ *
+ *     value                     result
+ *     (srcsize >> 8) + 32       bf99ed78...  corrupted
+ *     (srcsize >> 2) + 32       3b3f0ed6...  correct, boots
+ *     (srcsize >> 6) + 32       3b3f0ed6...  correct, boots   <- this, narrower
+ *     ~0U                       3b3f0ed6...  correct, boots   (all copy)
+ *
+ * Stock HyperOS 4 has this as a function with a __setup boot parameter
+ * (z_erofs_get_lz4_decompress_inplace_margin), so the exact value is
+ * runtime-configurable there. It could not be recovered: in the stock
+ * image there are no call sites and no address references to that symbol,
+ * so its body is not reachable to read. The value here was found by
+ * measurement instead.
+ *
+ * The safe range is narrowed to between >> 8 (corrupts) and >> 6 (works).
+ * >> 6 is the narrowest value measured safe: it is close to the boundary,
+ * so changing LZ4 or EROFS version should re-measure rather than assume
+ * this still holds.
+ */
 #endif
+#define LZ4_DECOMPRESS_INPLACE_MARGIN(srcsize)  (((srcsize) >> 6) + 32)
 
 struct z_erofs_lz4_decompress_ctx {
 	struct z_erofs_decompress_req *rq;

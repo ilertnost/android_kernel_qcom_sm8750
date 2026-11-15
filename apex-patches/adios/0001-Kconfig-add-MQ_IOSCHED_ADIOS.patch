@@ -1,0 +1,28 @@
+diff --git a/block/Kconfig.iosched b/block/Kconfig.iosched
+index 27f11320b..e011c4aa2 100644
+--- a/block/Kconfig.iosched
++++ b/block/Kconfig.iosched
+@@ -44,4 +44,23 @@ config BFQ_CGROUP_DEBUG
+ 	Enable some debugging help. Currently it exports additional stat
+ 	files in a cgroup which can be useful for debugging.
+ 
++config MQ_IOSCHED_ADIOS
++	tristate "ADIOS I/O scheduler"
++	help
++	  The ADIOS (Adaptive Deadline I/O Scheduler) I/O scheduler is a
++	  deadline-based scheduler that predicts the device type per I/O and
++	  adapts its parameters accordingly, rather than applying one static
++	  policy to every device. On flash storage it behaves like a
++	  deadline scheduler with per-device tuning; on slower devices it
++	  falls back toward a throughput-oriented policy.
++
++	  Details in Documentation/block/adios.rst
++
++config MQ_IOSCHED_DEFAULT_ADIOS
++	bool "Default ADIOS I/O scheduler"
++	depends on MQ_IOSCHED_ADIOS
++	default y
++	help
++	Select ADIOS as the default I/O scheduler when none is specified.
++
+ endmenu

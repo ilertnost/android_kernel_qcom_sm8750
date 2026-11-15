@@ -1,0 +1,38 @@
+diff --git a/kernel/Makefile b/kernel/Makefile
+index e71a0bb0..25bb4daa 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -45,7 +45,8 @@ GITHUB_COMMITS   := $(shell $(CURL_BIN) -sI "$(GITHUB_API_BASE)/commits?sha=$(RE
+ LOCAL_COUNT     := $(if $(GITHUB_COMMITS),$(GITHUB_COMMITS),$(git_commit_count))
+ KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),13000)
+ VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.2.0)
+-KSU_VERSION_FULL := $(if $(call git_short_sha),v$(VERSION_TAG)-$(call git_short_sha)@$(call git_branch),v$(VERSION_TAG)-$(REPO_NAME)-unknown@unknown)
++KSU_PINNED_SHA ?= 70fa0e09
++KSU_VERSION_FULL := $(if $(call git_short_sha),v$(VERSION_TAG)-$(call git_short_sha)@$(call git_branch),v$(VERSION_TAG)-$(REPO_NAME)-$(KSU_PINNED_SHA)@apexfoundry)
+ $(info -- $(REPO_NAME) version: $(KSU_VERSION) [$(KSU_VERSION_FULL)])
+ 
+ ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
+diff --git a/kernel/include/uapi/supercall.h b/kernel/include/uapi/supercall.h
+index bfdc1d14..ee9f5258 100644
+--- a/kernel/include/uapi/supercall.h
++++ b/kernel/include/uapi/supercall.h
+@@ -27,6 +27,7 @@ struct ksu_become_daemon_cmd {
+ DECLARE(__u32, EVENT_POST_FS_DATA, 1);
+ DECLARE(__u32, EVENT_BOOT_COMPLETED, 2);
+ DECLARE(__u32, EVENT_MODULE_MOUNTED, 3);
++DECLARE(__u32, EVENT_SERVICES, 4);
+ 
+ DECLARE(__u32, KSU_GET_INFO_FLAG_LKM, (1U << 0));
+ DECLARE(__u32, KSU_GET_INFO_FLAG_MANAGER, (1U << 1));
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 5d26f008..7ac83ede 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -151,7 +151,6 @@ static int apply_kernelsu_rules_fn(void *ptr)
+ 
+ void apply_kernelsu_rules(void)
+ {
+-    struct selinux_policy *pol, *old_pol;
+     struct policydb *db;
+ 
+     if (!getenforce()) {
